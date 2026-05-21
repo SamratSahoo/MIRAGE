@@ -8,6 +8,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+import torch._dynamo
+
 from sys import platform
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
@@ -165,7 +168,7 @@ class PPOTrainer:
         self.max_grad_norm = max_grad_norm
 
 
-    def train(self, total_timesteps=10000000, save_model=True):
+    def train(self, total_timesteps=10000000, save_model=True, save_freq=0):
         self.num_iterations = total_timesteps // self.batch_size
         agent = Agent(self.envs, goal_size=self.goal_size).to(self.device)
         optimizer = optim.Adam(agent.parameters(), lr=self.learning_rate, eps=1e-5)
@@ -186,7 +189,6 @@ class PPOTrainer:
         next_obs = torch.Tensor(next_obs_goal).to(self.device)
         next_done = torch.zeros(self.num_envs).to(self.device)
 
-        # One-off network summary.
         num_params = sum(p.numel() for p in agent.parameters())
         self.writer.add_scalar("charts/num_parameters", num_params, 0)
         self.writer.add_scalar("charts/num_iterations", self.num_iterations, 0)
@@ -454,6 +456,14 @@ class PPOTrainer:
                 self.writer.add_histogram(f"weights/{name}", param.detach(), global_step)
                 if param.grad is not None:
                     self.writer.add_histogram(f"grads/{name}", param.grad.detach(), global_step)
+
+            if save_model and save_freq > 0 and iteration % save_freq == 0:
+                ckpt_path = f"runs/{self.run_name}/{self.exp_name}_iter{iteration:06d}.cleanrl_model"
+                torch.save(agent.state_dict(), ckpt_path)
+                print(
+                    f"[checkpoint] iteration {iteration}/{self.num_iterations} "
+                    f"global_step={global_step}  ->  {ckpt_path}"
+                )
 
         if save_model:
             model_path = f"runs/{self.run_name}/{self.exp_name}.cleanrl_model"

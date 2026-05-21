@@ -14,7 +14,7 @@ ppo:
   seed: 1
 
   num_envs: 8000             
-  num_steps: 512            
+  num_steps: 16            
   num_minibatches: 32       
   update_epochs: 10        
 
@@ -37,5 +37,6 @@ wandb:
   entity: null              
 
 train:
-  total_timesteps: 10000000   
-  save_model: true            
+  total_timesteps: 1000000000
+  save_model: true
+  save_freq: 200               # checkpoint every N training iterations (0 = only final model)

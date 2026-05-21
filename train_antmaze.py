@@ -8,8 +8,9 @@ _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from algorithms.utils import ENV_CONFIG, configure_env  
-from ppo import PPOTrainer 
+import torch._dynamo
+from algorithms.utils import ENV_CONFIG, configure_env
+from ppo import PPOTrainer
 
 
 def load_config(path):
@@ -59,8 +60,6 @@ def main():
     print(f"  total_timesteps  : {total_timesteps:,}")
     print("=" * 66)
 
-    # Every argument is passed by keyword; PPOTrainer defines sensible defaults
-    # but config.yaml is the single source of truth here.
     trainer = PPOTrainer(
         env_type=env_cfg["env_type"],
         env_id=env_cfg["env_id"],
@@ -87,7 +86,11 @@ def main():
         wandb_entity=wandb_cfg.get("entity"),
     )
 
-    trainer.train(total_timesteps=total_timesteps, save_model=bool(train_cfg["save_model"]))
+    trainer.train(
+        total_timesteps=total_timesteps,
+        save_model=bool(train_cfg["save_model"]),
+        save_freq=int(train_cfg.get("save_freq", 0)),
+    )
     print(f"[done] run '{trainer.run_name}'  ->  runs/{trainer.run_name}")
 
 

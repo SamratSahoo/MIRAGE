@@ -224,3 +224,4 @@ videos/
 *.err                
 
 train_antmaze.sh
+wandb/
