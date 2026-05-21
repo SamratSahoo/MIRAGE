@@ -223,3 +223,12 @@ wandb/
 *.pt
 *.ckpt
 .schrodinger/
+runs/                
+videos/              
+*.cleanrl_model      
+*.out                 
+*.err                
+
+train_antmaze.sh
+wandb/
+sbatch/**

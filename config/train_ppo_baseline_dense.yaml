@@ -1,0 +1,42 @@
+env:
+  env_type: antmaze
+  env_id: AntMaze_UMaze-v5
+  reward_type: dense
+  continuing_task: false
+  reset_target: false
+  max_episode_steps: null
+  goal_size: 2
+  capture_video: false
+  video_every: 1000         
+
+ppo:
+  load_default_checkpoint: true
+  exp_name: train_ppo_baseline_dense
+  seed: 1
+  num_envs: 16384             # GPU-batched worlds (MuJoCo Warp); tune up to GPU memory
+  num_steps: 16
+  num_minibatches: 32
+  update_epochs: 10        
+
+  learning_rate: 0.0003
+  anneal_lr: true           
+  gamma: 0.99              
+  gae_lambda: 0.95         
+
+  norm_adv: true            
+  clip_coef: 0.2           
+  clip_vloss: true
+  ent_coef: 0.0             
+  vf_coef: 0.5             
+  max_grad_norm: 0.5        
+  target_kl: null           
+
+wandb:
+  track: true              
+  project: MIRAGE       
+  entity: null              
+
+train:
+  total_timesteps: 100000000
+  save_model: true
+  save_freq: 5000000              # checkpoint every N training steps (0 = only final model)
