@@ -15,7 +15,8 @@ from sys import platform
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
 from algorithms.evaluate_agent import evaluate
-from algorithms.utils import make_env,transform_obs
+from algorithms.utils import make_env
+from algorithms.warp_antmaze import WarpAntMazeEnv
 
 os.environ["MUJOCO_GL"] = "glfw" if platform == "darwin" else "osmesa"
 
@@ -157,9 +158,11 @@ class PPOTrainer:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.envs = gym.vector.SyncVectorEnv(
-            [make_env(env_type, self.env_id, i, i == 0, self.run_name) for i in range(self.num_envs)],
-            autoreset_mode=gym.vector.vector_env.AutoresetMode.SAME_STEP
+        self.envs = WarpAntMazeEnv(
+            env_id=self.env_id,
+            num_envs=self.num_envs,
+            device=self.device,
+            seed=self.seed,
         )
 
         self.learning_rate = learning_rate
@@ -174,6 +177,7 @@ class PPOTrainer:
 
 
     def _evaluate_agent(self, agent, global_step, eval_episodes=10):
+        torch.save(agent.state_dict(), self.model_path)
         eval_returns = evaluate(
             self.env_type,
             self.model_path,
@@ -232,22 +236,22 @@ class PPOTrainer:
         else:
             print("[checkpoint] load_default_checkpoint=False; training from scratch")
 
-        obs = torch.zeros((self.num_steps, self.num_envs) + (np.array(self.envs.single_observation_space['observation'].shape).prod() + self.goal_size,)).to(self.device)
+        obs = torch.zeros((self.num_steps, self.num_envs, self.envs.policy_obs_dim)).to(self.device)
         actions = torch.zeros((self.num_steps, self.num_envs) + self.envs.single_action_space.shape).to(self.device)
         logprobs = torch.zeros((self.num_steps, self.num_envs)).to(self.device)
         rewards = torch.zeros((self.num_steps, self.num_envs)).to(self.device)
         dones = torch.zeros((self.num_steps, self.num_envs)).to(self.device)
         values = torch.zeros((self.num_steps, self.num_envs)).to(self.device)
         real_next_values = torch.zeros((self.num_steps, self.num_envs)).to(self.device)
+        action_low = self.envs.action_low
+        action_high = self.envs.action_high
 
         global_step = 0
         global_episodes = 0
         last_save_step = 0
         last_eval_step = 0
         start_time = time.time()
-        next_obs, _ = self.envs.reset(seed=self.seed)
-        next_obs_goal = transform_obs(next_obs, self.goal_size)
-        next_obs = torch.Tensor(next_obs_goal).to(self.device)
+        next_obs = self.envs.reset(seed=self.seed)
         next_done = torch.zeros(self.num_envs).to(self.device)
 
         num_params = sum(p.numel() for p in agent.parameters())
@@ -276,61 +280,30 @@ class PPOTrainer:
                 actions[step] = action
                 logprobs[step] = logprob
 
-                action_np = action.cpu().numpy()
-                clipped_action = np.clip(
-                    action_np,
-                    self.envs.single_action_space.low,
-                    self.envs.single_action_space.high,
-                )
+                clipped_action = torch.clamp(action, action_low, action_high)
+                action_clip_fracs.append((clipped_action != action).float().mean().item())
 
-                action_clip_fracs.append(float(np.mean(clipped_action != action_np)))
-                next_obs_raw, reward, terminations, truncations, infos = self.envs.step(clipped_action)
-                next_done_np = np.logical_or(terminations, truncations)
-                iter_terminations += int(np.sum(terminations))
-                iter_truncations += int(np.sum(np.logical_and(truncations, np.logical_not(terminations))))
-                rewards[step] = torch.tensor(reward).to(self.device).view(-1)
-                next_obs_goal = transform_obs(next_obs_raw, self.goal_size)
-                next_obs = torch.Tensor(next_obs_goal).to(self.device)
+                next_obs, reward, terminations, truncations, infos = self.envs.step(clipped_action)
+                done = terminations | truncations
+                iter_terminations += int(terminations.sum().item())
+                iter_truncations += int((truncations & ~terminations).sum().item())
+                rewards[step] = reward
 
                 with torch.no_grad():
-                    step_next_values = agent.get_value(next_obs).flatten()
-                term_mask = torch.tensor(terminations, dtype=torch.float32, device=self.device)
-                step_next_values = step_next_values * (1.0 - term_mask)
-                if "final_obs" in infos:
-                    final_obs_arr = infos["final_obs"]
-                    if "_final_obs" in infos:
-                        final_mask = infos["_final_obs"]
-                    elif isinstance(final_obs_arr, dict):
-                        final_mask = next_done_np
-                    else:
-                        final_mask = np.array([fo is not None for fo in final_obs_arr])
-                    trunc_idx = np.where(np.logical_and(truncations, final_mask))[0]
-                    if len(trunc_idx) > 0:
-                        if isinstance(final_obs_arr, dict):
-                            final_dict = {k: final_obs_arr[k][trunc_idx] for k in next_obs_raw.keys()}
-                        else:
-                            final_dict = {
-                                k: np.stack([final_obs_arr[i][k] for i in trunc_idx])
-                                for k in next_obs_raw.keys()
-                            }
-                        final_transformed = transform_obs(final_dict, self.goal_size)
-                        with torch.no_grad():
-                            v_final = agent.get_value(
-                                torch.Tensor(final_transformed).to(self.device)
-                            ).flatten()
-                        step_next_values[torch.from_numpy(trunc_idx).long().to(self.device)] = v_final
-                real_next_values[step] = step_next_values
-                next_done = torch.Tensor(next_done_np).to(self.device)
+                    real_next_values[step] = (
+                        agent.get_value(infos["final_obs"]).flatten()
+                        * (1.0 - terminations.float())
+                    )
+                next_done = done.float()
 
-                if "final_info" in infos:
-                    for ep_return in infos["final_info"]["episode"]["r"]:
-                        print(f"global_step={global_step}, episodic_return={ep_return}")
-                        self.writer.add_scalar("charts/episodic_return", ep_return, global_step)
-                        iter_ep_returns.append(float(ep_return))
-
-                    for ep_length in infos["final_info"]["episode"]["l"]:
-                        self.writer.add_scalar("charts/episodic_length", ep_length, global_step)
-                        iter_ep_lengths.append(float(ep_length))
+                if bool(done.any()):
+                    ep_returns = infos["episodic_return"][done]
+                    ep_lengths = infos["episodic_length"][done]
+                    for ep_r, ep_l in zip(ep_returns.tolist(), ep_lengths.tolist()):
+                        self.writer.add_scalar("charts/episodic_return", ep_r, global_step)
+                        self.writer.add_scalar("charts/episodic_length", ep_l, global_step)
+                        iter_ep_returns.append(float(ep_r))
+                        iter_ep_lengths.append(float(ep_l))
 
             rollout_time = time.time() - rollout_start
             global_episodes += len(iter_ep_returns)
@@ -348,7 +321,7 @@ class PPOTrainer:
                     advantages[t] = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
                 returns = advantages + values
 
-            b_obs = obs.reshape((-1,) + (np.array(self.envs.single_observation_space['observation'].shape).prod() + self.goal_size,))
+            b_obs = obs.reshape((-1, self.envs.policy_obs_dim))
             b_logprobs = logprobs.reshape(-1)
             b_actions = actions.reshape((-1,) + self.envs.single_action_space.shape)
             b_advantages = advantages.reshape(-1)
@@ -407,7 +380,6 @@ class PPOTrainer:
 
                     optimizer.zero_grad()
                     loss.backward()
-                    # clip_grad_norm_ returns the *pre-clip* total gradient norm.
                     grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), self.max_grad_norm)
                     optimizer.step()
 

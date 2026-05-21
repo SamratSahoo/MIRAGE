@@ -14,9 +14,9 @@ ppo:
   exp_name: train_ppo_baseline_sparse
   seed: 1
 
-  num_envs: 8000             
-  num_steps: 16            
-  num_minibatches: 32       
+  num_envs: 16384             # GPU-batched worlds (MuJoCo Warp); tune up to GPU memory
+  num_steps: 16
+  num_minibatches: 32
   update_epochs: 10        
 
   learning_rate: 0.0003
@@ -38,6 +38,6 @@ wandb:
   entity: null              
 
 train:
-  total_timesteps: 1000000000
+  total_timesteps: 100000000
   save_model: true
-  save_freq: 250000               # checkpoint every N training steps (0 = only final model)
+  save_freq: 5000000               # checkpoint every N training steps (0 = only final model)
