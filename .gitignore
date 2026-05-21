@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+runs/
+ckpts/
+wandb/
+*.pt
+*.ckpt
+.schrodinger/
