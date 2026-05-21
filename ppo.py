@@ -79,6 +79,7 @@ class PPOTrainer:
     vf_coef= 0.5,
     max_grad_norm=0.5,
     goal_size=0,
+    load_default_checkpoint=True,
     track=False,
     wandb_project_name="mirage-ppo",
     wandb_entity=None
@@ -96,15 +97,19 @@ class PPOTrainer:
         self.minibatch_size = int(self.batch_size // self.num_minibatches)
         self.goal_size = goal_size
         self.track = track
+        self.load_default_checkpoint = load_default_checkpoint
 
-        self.run_name = f"{self.env_id}__{self.exp_name}__{self.seed}__{int(time.time())}"
+        self.run_name = self.exp_name
+        self.run_dir = os.path.join("runs", self.run_name)
+        self.model_path = os.path.join(self.run_dir, f"{self.exp_name}.cleanrl_model")
+        self.best_model_path = os.path.join(self.run_dir, f"{self.exp_name}_best.cleanrl_model")
+        self._best_eval_return = None
 
-        # Single source of truth for every tunable -- mirrored into the W&B
-        # run config and written as a TensorBoard text summary.
         self.hyperparams = {
             "env_type": env_type,
             "env_id": env_id,
             "exp_name": exp_name,
+            "load_default_checkpoint": load_default_checkpoint,
             "seed": seed,
             "num_envs": num_envs,
             "num_steps": num_steps,
@@ -168,10 +173,64 @@ class PPOTrainer:
         self.max_grad_norm = max_grad_norm
 
 
-    def train(self, total_timesteps=10000000, save_model=True, save_freq=0):
+    def _evaluate_agent(self, agent, global_step, eval_episodes=10):
+        eval_returns = evaluate(
+            self.env_type,
+            self.model_path,
+            make_env,
+            self.env_id,
+            eval_episodes=eval_episodes,
+            run_name=self.run_name,
+            Model=Agent,
+            device=self.device,
+            gamma=self.gamma,
+            goal_size=self.goal_size,
+        )
+        if not eval_returns:
+            return
+        eval_returns = np.array(eval_returns, dtype=np.float32)
+        mean_return = float(eval_returns.mean())
+        self.writer.add_scalar("eval/episodic_return_mean", mean_return, global_step)
+        self.writer.add_scalar("eval/episodic_return_std", float(eval_returns.std()), global_step)
+        self.writer.add_scalar("eval/episodic_return_min", float(eval_returns.min()), global_step)
+        self.writer.add_scalar("eval/episodic_return_max", float(eval_returns.max()), global_step)
+        self.writer.add_histogram("eval/episodic_return_hist", eval_returns, global_step)
+
+        if self._best_eval_return is None or mean_return > self._best_eval_return:
+            self._best_eval_return = mean_return
+            torch.save(agent.state_dict(), self.best_model_path)
+            print(
+                f"[eval] global_step={global_step} mean_return={mean_return:.3f}  "
+                f"->  new best, saved {self.best_model_path}"
+            )
+        else:
+            print(
+                f"[eval] global_step={global_step} mean_return={mean_return:.3f}  "
+                f"(best={self._best_eval_return:.3f})"
+            )
+        self.writer.add_scalar("eval/best_episodic_return_mean", self._best_eval_return, global_step)
+
+    def train(self, total_timesteps=10000000, save_model=True, save_freq=0, eval_freq=250000):
         self.num_iterations = total_timesteps // self.batch_size
+        self._best_eval_return = None
         agent = Agent(self.envs, goal_size=self.goal_size).to(self.device)
         optimizer = optim.Adam(agent.parameters(), lr=self.learning_rate, eps=1e-5)
+
+        if self.load_default_checkpoint:
+            ckpt_path = next(
+                (p for p in (self.best_model_path, self.model_path) if os.path.exists(p)),
+                None,
+            )
+            if ckpt_path is not None:
+                agent.load_state_dict(torch.load(ckpt_path, map_location=self.device))
+                print(f"[checkpoint] loaded default checkpoint: {ckpt_path}")
+            else:
+                print(
+                    f"[checkpoint] load_default_checkpoint=True but no checkpoint "
+                    f"found under {self.run_dir}; training from scratch"
+                )
+        else:
+            print("[checkpoint] load_default_checkpoint=False; training from scratch")
 
         obs = torch.zeros((self.num_steps, self.num_envs) + (np.array(self.envs.single_observation_space['observation'].shape).prod() + self.goal_size,)).to(self.device)
         actions = torch.zeros((self.num_steps, self.num_envs) + self.envs.single_action_space.shape).to(self.device)
@@ -183,6 +242,8 @@ class PPOTrainer:
 
         global_step = 0
         global_episodes = 0
+        last_save_step = 0
+        last_eval_step = 0
         start_time = time.time()
         next_obs, _ = self.envs.reset(seed=self.seed)
         next_obs_goal = transform_obs(next_obs, self.goal_size)
@@ -367,6 +428,10 @@ class PPOTrainer:
             now = time.time()
             sps = int(global_step / (now - start_time))
             update_time = now - update_start
+            iteration_time = now - rollout_start
+            iteration_fps = self.batch_size / max(iteration_time, 1e-8)
+            rollout_fps = self.batch_size / max(rollout_time, 1e-8)
+            update_fps = self.batch_size / max(update_time, 1e-8)
 
             self.writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
             self.writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
@@ -391,12 +456,17 @@ class PPOTrainer:
             self.writer.add_scalar("charts/epochs_run", epochs_run, global_step)
 
             self.writer.add_scalar("charts/SPS", sps, global_step)
+            self.writer.add_scalar("charts/FPS", iteration_fps, global_step)
             self.writer.add_scalar("charts/iteration", iteration, global_step)
             self.writer.add_scalar("charts/global_step", global_step, global_step)
             self.writer.add_scalar("charts/total_episodes", global_episodes, global_step)
             self.writer.add_scalar("time/rollout_seconds", rollout_time, global_step)
             self.writer.add_scalar("time/update_seconds", update_time, global_step)
+            self.writer.add_scalar("time/iteration_seconds", iteration_time, global_step)
             self.writer.add_scalar("time/elapsed_seconds", now - start_time, global_step)
+            self.writer.add_scalar("time/rollout_fps", rollout_fps, global_step)
+            self.writer.add_scalar("time/update_fps", update_fps, global_step)
+            self.writer.add_scalar("time/iteration_fps", iteration_fps, global_step)
 
             done_total = iter_terminations + iter_truncations
             self.writer.add_scalar("charts/episodes_this_iter", len(iter_ep_returns), global_step)
@@ -457,37 +527,22 @@ class PPOTrainer:
                 if param.grad is not None:
                     self.writer.add_histogram(f"grads/{name}", param.grad.detach(), global_step)
 
-            if save_model and save_freq > 0 and iteration % save_freq == 0:
-                ckpt_path = f"runs/{self.run_name}/{self.exp_name}_iter{iteration:06d}.cleanrl_model"
+            if save_model and save_freq > 0 and global_step - last_save_step >= save_freq:
+                last_save_step = global_step
+                ckpt_path = os.path.join(
+                    self.run_dir, f"{self.exp_name}_step{global_step:09d}.cleanrl_model"
+                )
                 torch.save(agent.state_dict(), ckpt_path)
                 print(
-                    f"[checkpoint] iteration {iteration}/{self.num_iterations} "
-                    f"global_step={global_step}  ->  {ckpt_path}"
+                    f"[checkpoint] global_step={global_step}/{total_timesteps}  ->  {ckpt_path}"
                 )
 
+            if save_model and global_step - last_eval_step >= eval_freq:
+                last_eval_step = global_step
+                self._evaluate_agent(agent, global_step)
+
         if save_model:
-            model_path = f"runs/{self.run_name}/{self.exp_name}.cleanrl_model"
-            torch.save(agent.state_dict(), model_path)
-            eval_returns = evaluate(
-                self.env_type,
-                model_path,
-                make_env,
-                self.env_id,
-                eval_episodes=10,
-                run_name=self.run_name,
-                Model=Agent,
-                device=self.device,
-                gamma=self.gamma,
-            )
-            if eval_returns:
-                eval_returns = np.array(eval_returns, dtype=np.float32)
-                for idx, ret in enumerate(eval_returns):
-                    self.writer.add_scalar("eval/episodic_return", ret, idx)
-                self.writer.add_scalar("eval/episodic_return_mean", float(eval_returns.mean()), global_step)
-                self.writer.add_scalar("eval/episodic_return_std", float(eval_returns.std()), global_step)
-                self.writer.add_scalar("eval/episodic_return_min", float(eval_returns.min()), global_step)
-                self.writer.add_scalar("eval/episodic_return_max", float(eval_returns.max()), global_step)
-                self.writer.add_histogram("eval/episodic_return_hist", eval_returns, global_step)
+            self._evaluate_agent(agent, global_step)
 
         self.envs.close()
         self.writer.close()

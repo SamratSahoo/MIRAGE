@@ -1,7 +1,7 @@
 env:
   env_type: antmaze
   env_id: AntMaze_UMaze-v5
-  reward_type: sparse
+  reward_type: dense
   continuing_task: false
   reset_target: false
   max_episode_steps: null
@@ -10,9 +10,9 @@ env:
   video_every: 1000         
 
 ppo:
-  exp_name: train_ppo_baseline
+  load_default_checkpoint: true
+  exp_name: train_ppo_baseline_dense
   seed: 1
-
   num_envs: 8000             
   num_steps: 16            
   num_minibatches: 32       
@@ -39,4 +39,4 @@ wandb:
 train:
   total_timesteps: 1000000000
   save_model: true
-  save_freq: 200               # checkpoint every N training iterations (0 = only final model)
+  save_freq: 250000              # checkpoint every N training steps (0 = only final model)

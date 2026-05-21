@@ -70,6 +70,7 @@ def main():
         num_minibatches=int(ppo_cfg["num_minibatches"]),
         update_epochs=int(ppo_cfg["update_epochs"]),
         exp_name=str(ppo_cfg["exp_name"]),
+        load_default_checkpoint=bool(ppo_cfg.get("load_default_checkpoint", True)),
         learning_rate=float(ppo_cfg["learning_rate"]),
         anneal_lr=bool(ppo_cfg["anneal_lr"]),
         target_kl=ppo_cfg["target_kl"],
