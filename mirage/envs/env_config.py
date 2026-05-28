@@ -11,6 +11,7 @@ ENV_CONFIG = {
     "max_episode_steps": None,
     "capture_video": False,
     "video_every": 100,
+    "use_cuda_graph": True,
 }
 
 _MAZE_ENV_TYPES = {"antmaze", "maze", "gymnasium_robotics"}

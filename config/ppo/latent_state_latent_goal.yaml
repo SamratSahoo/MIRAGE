@@ -8,6 +8,7 @@ env:
   goal_size: 2
   capture_video: false
   video_every: 1000
+  use_cuda_graph: false
 
 ppo:
   seed: 1

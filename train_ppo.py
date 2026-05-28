@@ -42,6 +42,7 @@ def main():
         max_episode_steps=env_cfg["max_episode_steps"],
         capture_video=env_cfg["capture_video"],
         video_every=env_cfg["video_every"],
+        use_cuda_graph=env_cfg.get("use_cuda_graph", True),
     )
 
     print("=" * 66)

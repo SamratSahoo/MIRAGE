@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=iliad
-#SBATCH --partition=iliad
+#SBATCH --partition=iliad-lo
 #SBATCH --time=72:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G

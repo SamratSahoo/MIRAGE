@@ -50,6 +50,7 @@ class PPOEvaluator:
             max_episode_steps=env_cfg["max_episode_steps"],
             capture_video=env_cfg["capture_video"],
             video_every=env_cfg["video_every"],
+            use_cuda_graph=env_cfg.get("use_cuda_graph", True),
         )
         self.env_id = env_cfg["env_id"]
         self.env_cfg = env_cfg

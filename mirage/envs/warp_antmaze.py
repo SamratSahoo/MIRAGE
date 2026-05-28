@@ -21,12 +21,14 @@ class WarpAntMazeEnv:
     ACT_DIM = _ACT_DIM
     GOAL_RADIUS = _GOAL_RADIUS
 
-    def __init__(self, env_id, num_envs, device, seed=0, njmax=512, use_cuda_graph=True,
+    def __init__(self, env_id, num_envs, device, seed=0, njmax=512, use_cuda_graph=None,
                  subgoal_planner=None, subgoal_radius=1.5):
         self.env_id = env_id
         self.num_envs = int(num_envs)
         self.device = torch.device(device)
         self.policy_obs_dim = _OBS_DIM + _GOAL_DIM
+        if use_cuda_graph is None:
+            use_cuda_graph = bool(ENV_CONFIG.get("use_cuda_graph", True))
         self.use_cuda_graph = bool(use_cuda_graph)
         self._graph = None
         self.subgoal_planner = subgoal_planner
