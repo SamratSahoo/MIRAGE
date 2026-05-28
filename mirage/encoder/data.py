@@ -85,8 +85,9 @@ def load_antmaze(dataset_id: str = "D4RL/antmaze/umaze-v1",
                  max_episodes: int | None = None) -> AntmazeData:
     if datasets_path is not None:
         os.environ["MINARI_DATASETS_PATH"] = datasets_path
+        os.makedirs(datasets_path, exist_ok=True)
     import minari
-    ds = minari.load_dataset(dataset_id)
+    ds = minari.load_dataset(dataset_id, download=True)
 
     obs_b, ach_b, des_b, act_b, rew_b = [], [], [], [], []
     ep_lens, ep_ids = [], []
