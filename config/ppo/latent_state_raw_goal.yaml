@@ -1,0 +1,63 @@
+env:
+  env_type: antmaze
+  env_id: AntMaze_UMaze-v5
+  reward_type: sparse
+  continuing_task: true
+  reset_target: false
+  max_episode_steps: 1000
+  goal_size: 2
+  capture_video: false
+  video_every: 1000
+
+ppo:
+  seed: 1
+  load_default_checkpoint: true
+
+  state_mode: latent
+  latent_encoder_path: "/iliad2/u/samrat/MIRAGE/runs_encoder/state_encoder/encoder_best.pt"
+  goal_encoder_path: ""
+  goal_conditioning: ['goal']
+  subgoal_mode: ""
+  subgoal_radius: 1.5
+
+  encoder_train:
+    enabled: true
+    steps_per_iter: 4
+    batch_size: 4096
+    contrastive_window: 8
+    nce_weight: 1.0
+    fwd_weight: 0.1
+    inv_weight: 1.0
+    nce_temperature: 0.1
+    lr: 3.0e-4
+
+  goal_encoder_train:
+    enabled: false
+
+  num_envs: 16384
+  num_steps: 16
+  num_minibatches: 32
+  update_epochs: 10
+  learning_rate: 0.0003
+  anneal_lr: true
+  gamma: 0.99
+  gae_lambda: 0.95
+  norm_adv: true
+  clip_coef: 0.2
+  clip_vloss: true
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: null
+
+wandb:
+  track: true
+  project: MIRAGE
+  entity: null
+
+train:
+  total_timesteps: 100000000
+  save_model: true
+  save_freq: 5000000
+  eval_freq: 2000000
+  eval_episodes: 256

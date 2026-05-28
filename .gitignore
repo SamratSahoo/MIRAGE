@@ -218,17 +218,17 @@ __marimo__/
 .streamlit/secrets.toml
 
 runs/
+runs_encoder/
 ckpts/
 wandb/
+data/
 *.pt
 *.ckpt
 .schrodinger/
-runs/                
-videos/              
-*.cleanrl_model      
-*.out                 
-*.err                
-
-train_antmaze.sh
-wandb/
-sbatch/**
+videos/
+*.cleanrl_model
+*.out
+*.err
+sbatch/*.out
+sbatch/*.err
+wandb_run_id.txt
