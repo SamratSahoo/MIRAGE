@@ -35,9 +35,9 @@ echo "working directory = $(pwd)"
 
 export MUJOCO_GL="osmesa"
 export PYOPENGL_PLATFORM="osmesa"
-export CUDA_VISIBLE_DEVICES=0
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$(pwd):$PYTHONPATH"
+echo "CUDA_VISIBLE_DEVICES = $CUDA_VISIBLE_DEVICES"
 
 DEFAULT_CONFIG="$PROJECT_DIR/config/encoder/state_encoder.yaml"
 config="${1:-$DEFAULT_CONFIG}"

@@ -35,9 +35,13 @@ echo "working directory = $(pwd)"
 
 export MUJOCO_GL="osmesa"
 export PYOPENGL_PLATFORM="osmesa"
-export CUDA_VISIBLE_DEVICES=0
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$(pwd):$PYTHONPATH"
+export WARP_CACHE_PATH="/tmp/${USER}_warp_cache_${SLURM_JOB_ID}"
+mkdir -p "$WARP_CACHE_PATH"
+echo "WARP_CACHE_PATH    = $WARP_CACHE_PATH"
+echo "CUDA_VISIBLE_DEVICES = $CUDA_VISIBLE_DEVICES"
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader || true
 
 DEFAULT_CONFIG="$PROJECT_DIR/config/ppo/raw_state_raw_goal.yaml"
 config="${1:-$DEFAULT_CONFIG}"

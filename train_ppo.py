@@ -2,6 +2,26 @@ import argparse
 import os
 import sys
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+
+def _warm_torch_cuda() -> None:
+    if not torch.cuda.is_available():
+        return
+    dev = torch.device("cuda")
+    _w = nn.Linear(2, 2).to(dev)
+    _o = optim.Adam(_w.parameters(), lr=1.0)
+    _y = _w(torch.zeros(1, 2, device=dev)).sum()
+    _y.backward()
+    _o.step()
+    del _w, _o, _y
+    torch.cuda.empty_cache()
+
+
+_warm_torch_cuda()
+
 import yaml
 
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
