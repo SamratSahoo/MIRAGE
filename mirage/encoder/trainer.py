@@ -16,7 +16,7 @@ from mirage.utils.wandb_session import WandbSession
 from .data import Sampler, load_antmaze
 from .eval import full_eval
 from .losses import forward_dyn_loss, info_nce, inverse_dyn_loss
-from .models import ForwardDynamics, InverseDynamics, StateEncoder
+from .models import ForwardDynamics, InverseDynamics, MaskedStateEncoder, StateEncoder
 
 
 class EncoderTrainer:
@@ -57,12 +57,23 @@ class EncoderTrainer:
         val_sampler = Sampler(val_data, cfg["input_mode"], cfg["contrastive_window"],
                               seed=cfg["seed"] + 1, device=self.device)
 
-        encoder = StateEncoder(in_dim=state_dim,
-                               latent_dim=cfg["latent_dim"],
-                               hidden_dim=cfg["hidden_dim"],
-                               n_hidden=cfg["n_hidden"],
-                               l2_normalize=cfg["l2_normalize"],
-                               cold_init_eps=cfg["cold_init_eps"]).to(self.device)
+        mask_prob = float(cfg.get("mask_prob", 0.0))
+        if mask_prob > 0:
+            encoder = MaskedStateEncoder(
+                latent_dim=cfg["latent_dim"],
+                hidden_dim=cfg["hidden_dim"],
+                n_hidden=cfg["n_hidden"],
+                l2_normalize=cfg["l2_normalize"],
+                cold_init_eps=cfg["cold_init_eps"],
+            ).to(self.device)
+        else:
+            encoder = StateEncoder(in_dim=state_dim,
+                                   latent_dim=cfg["latent_dim"],
+                                   hidden_dim=cfg["hidden_dim"],
+                                   n_hidden=cfg["n_hidden"],
+                                   l2_normalize=cfg["l2_normalize"],
+                                   cold_init_eps=cfg["cold_init_eps"]).to(self.device)
+        self._mask_prob = mask_prob
         fwd = ForwardDynamics(latent_dim=cfg["latent_dim"], act_dim=act_dim,
                               hidden_dim=cfg["dyn_hidden_dim"], n_hidden=cfg["dyn_n_hidden"]).to(self.device)
         inv = InverseDynamics(latent_dim=cfg["latent_dim"], act_dim=act_dim,
@@ -129,7 +140,11 @@ class EncoderTrainer:
         for step in range(start_step, total_steps + 1):
             encoder.train(); fwd.train(); inv.train()
             pb = train_sampler.pair_batch(cfg["batch_size"])
-            z1 = encoder(pb["s1"]); z2 = encoder(pb["s2"])
+            if self._mask_prob > 0:
+                z1 = encoder(pb["s1"], mask_prob=self._mask_prob)
+                z2 = encoder(pb["s2"], mask_prob=self._mask_prob)
+            else:
+                z1 = encoder(pb["s1"]); z2 = encoder(pb["s2"])
             nce_loss, nce_log = info_nce(z1, z2, temperature=cfg["nce_temperature"])
 
             ib = train_sampler.iid_batch(cfg["batch_size"])

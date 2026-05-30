@@ -40,6 +40,36 @@ class StateEncoder(nn.Module):
         return z
 
 
+class MaskedStateEncoder(nn.Module):
+    def __init__(self, latent_dim: int = 16,
+                 hidden_dim: int = 512, n_hidden: int = 3,
+                 l2_normalize: bool = True, cold_init_eps: float = 1e-12,
+                 proprio_dim: int = 27, xy_dim: int = 2):
+        super().__init__()
+        self.proprio_dim = proprio_dim
+        self.xy_dim = xy_dim
+        self.in_dim = proprio_dim + xy_dim
+        self.net = build_mlp(proprio_dim + xy_dim + 1, hidden_dim, n_hidden, latent_dim,
+                             cold_init_eps=cold_init_eps)
+        self.l2_normalize = l2_normalize
+        self.latent_dim = latent_dim
+
+    def forward(self, s: torch.Tensor, mask_prob: float = 0.0) -> torch.Tensor:
+        B = s.shape[0]
+        if mask_prob > 0:
+            flag = (torch.rand(B, 1, device=s.device, dtype=s.dtype) < mask_prob).to(s.dtype)
+        else:
+            flag = torch.zeros((B, 1), device=s.device, dtype=s.dtype)
+        proprio_keep = 1.0 - flag
+        masked_proprio = s[:, :self.proprio_dim] * proprio_keep
+        xy = s[:, self.proprio_dim:self.proprio_dim + self.xy_dim]
+        s_aug = torch.cat([masked_proprio, xy, flag], dim=-1)
+        z = self.net(s_aug)
+        if self.l2_normalize:
+            z = F.normalize(z, dim=-1, eps=1e-8)
+        return z
+
+
 class ForwardDynamics(nn.Module):
     def __init__(self, latent_dim: int, act_dim: int, hidden_dim: int = 256, n_hidden: int = 2):
         super().__init__()
