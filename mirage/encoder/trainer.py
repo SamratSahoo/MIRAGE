@@ -177,6 +177,7 @@ class EncoderTrainer:
                        "train/steps_per_sec": sps}
                 for k, v in log.items():
                     self.writer.add_scalar(k, v, step)
+                self.session.log(log, step=step)
                 print(f"[step {step:>7d}] loss={loss.item():.4f}  "
                       f"nce={nce_log['info_nce/loss']:.4f}  "
                       f"fwd={fwd_log['forward_dyn/mse']:.5f}  "
@@ -192,6 +193,7 @@ class EncoderTrainer:
                                temperature=cfg["nce_temperature"])
                 for k, v in vm.items():
                     self.writer.add_scalar(k, v, step)
+                self.session.log(vm, step=step)
                 val_metric = vm["val/info_nce_loss"]
                 print(f"[eval  {step:>7d}] " + "  ".join(f"{k.split('/',1)[1]}={v:.4f}" for k, v in vm.items()))
                 if val_metric < best_val:
