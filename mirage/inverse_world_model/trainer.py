@@ -6,7 +6,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 
@@ -14,17 +13,13 @@ from mirage.encoder.load import load_encoder
 from mirage.utils.checkpoint import Checkpointer
 from mirage.utils.wandb_session import WandbSession
 
-from .data import MultiStepSampler, load_antmaze
+from .data import InverseWindowSampler, load_antmaze
 from .eval import full_eval
-from .losses import gaussian_nll
-from .models import DynamicsEnsemble
+from .losses import inverse_losses
+from .models import InverseWorldModel
 
 
-def _horizon_weights(H: int, rho: float) -> list[float]:
-    return [rho ** k for k in range(H)]
-
-
-class WorldModelTrainer:
+class InverseWorldModelTrainer:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
@@ -39,7 +34,7 @@ class WorldModelTrainer:
             yaml.safe_dump(cfg, f)
 
         self.writer = SummaryWriter(log_dir=str(self.run_dir / "tb"))
-        self.checkpointer = Checkpointer(str(self.run_dir), exp_name="world_model", suffix=".pt")
+        self.checkpointer = Checkpointer(str(self.run_dir), exp_name="inverse_world_model", suffix=".pt")
         self.session = WandbSession(
             run_dir=str(self.run_dir),
             project=cfg.get("wandb_project", "MIRAGE"),
@@ -50,20 +45,10 @@ class WorldModelTrainer:
             sync_tensorboard=True,
         )
 
-    def _load_encoder_and_fwd_init(self):
-        cfg = self.cfg
-        encoder, enc_cfg, ck = load_encoder(cfg["encoder_ckpt"], device=self.device, eval_mode=True)
-        if enc_cfg["input_mode"] != cfg["input_mode"]:
-            raise ValueError(
-                f"input_mode mismatch: encoder ckpt was trained with "
-                f"{enc_cfg['input_mode']!r} but world-model cfg says {cfg['input_mode']!r}"
-            )
-        return encoder, ck["fwd"], enc_cfg
-
-    def _save_ckpt(self, path: str, step: int, ensemble, opt, scheduler, best_val, val_metrics):
+    def _save_ckpt(self, path: str, step: int, model, opt, scheduler, best_val, val_metrics):
         self.checkpointer.save({
             "step": int(step),
-            "ensemble": ensemble.state_dict(),
+            "model": model.state_dict(),
             "optimizer": opt.state_dict(),
             "scheduler": scheduler.state_dict() if scheduler is not None else None,
             "best_val": float(best_val),
@@ -78,32 +63,32 @@ class WorldModelTrainer:
 
     def train(self):
         cfg = self.cfg
-        encoder, fwd_state, enc_cfg = self._load_encoder_and_fwd_init()
+        encoder, enc_cfg, _ = load_encoder(cfg["encoder_ckpt"], device=self.device, eval_mode=True)
+        if enc_cfg["input_mode"] != cfg["input_mode"]:
+            raise ValueError(
+                f"input_mode mismatch: encoder ckpt was trained with "
+                f"{enc_cfg['input_mode']!r} but inverse-wm cfg says {cfg['input_mode']!r}"
+            )
         latent_dim = int(enc_cfg["latent_dim"])
-        l2_norm_targets = bool(enc_cfg["l2_normalize"])
 
         data = load_antmaze(cfg["dataset_id"], cfg["datasets_path"])
         train_data, val_data = data.split(cfg["val_frac"], cfg["seed"])
-        H = int(cfg["horizon"])
-        train_sampler = MultiStepSampler(train_data, cfg["input_mode"], H,
-                                         seed=cfg["seed"], device=self.device)
-        eval_H = max(H, max(cfg["eval_horizons"]))
-        val_sampler = MultiStepSampler(val_data, cfg["input_mode"], eval_H,
-                                       seed=cfg["seed"] + 1, device=self.device)
+        K = int(cfg["k_max"])
+        train_sampler = InverseWindowSampler(train_data, cfg["input_mode"], K,
+                                             seed=cfg["seed"], device=self.device)
+        val_sampler = InverseWindowSampler(val_data, cfg["input_mode"], K,
+                                           seed=cfg["seed"] + 1, device=self.device)
         act_dim = int(train_data.act.shape[-1])
 
-        ensemble = DynamicsEnsemble(
-            n_members=int(cfg["n_members"]),
+        model = InverseWorldModel(
             latent_dim=latent_dim,
             act_dim=act_dim,
+            k_max=K,
             hidden_dim=int(cfg["hidden_dim"]),
             n_hidden=int(cfg["n_hidden"]),
         ).to(self.device)
-        if bool(cfg.get("init_from_fwd_ckpt", True)):
-            ensemble.load_from_forward_dynamics(fwd_state,
-                                                noise_std=float(cfg.get("init_noise_std", 1e-3)))
 
-        opt = torch.optim.AdamW(ensemble.parameters(),
+        opt = torch.optim.AdamW(model.parameters(),
                                 lr=float(cfg["lr"]),
                                 weight_decay=float(cfg["weight_decay"]),
                                 betas=(0.9, 0.999))
@@ -118,7 +103,7 @@ class WorldModelTrainer:
         if bool(cfg.get("load_default_checkpoint", True)):
             state = self.checkpointer.load(map_location=self.device)
             if state is not None:
-                ensemble.load_state_dict(state["ensemble"])
+                model.load_state_dict(state["model"])
                 opt.load_state_dict(state["optimizer"])
                 if scheduler is not None and state.get("scheduler") is not None:
                     scheduler.load_state_dict(state["scheduler"])
@@ -131,52 +116,48 @@ class WorldModelTrainer:
                     if cuda_state is not None and torch.cuda.is_available():
                         torch.cuda.set_rng_state_all([s.to("cpu", dtype=torch.uint8) for s in cuda_state])
                     np.random.set_state(rng["numpy"])
-                print(f"[world_model] resumed from step {start_step - 1}  best_val={best_val:.4f}")
+                print(f"[inverse_wm] resumed from step {start_step - 1}  best_val={best_val:.4f}")
             else:
-                print("[world_model] no resumable checkpoint; starting fresh (encoder fwd init used)")
+                print("[inverse_wm] no resumable checkpoint; starting fresh")
 
         self.session.init()
-        n_params = sum(p.numel() for p in ensemble.parameters())
-        print(f"[world_model] device={self.device}  run_dir={self.run_dir}  params={n_params/1e6:.2f}M")
-        print(f"[world_model] n_members={cfg['n_members']}  H={H}  latent_dim={latent_dim}  act_dim={act_dim}")
+        n_params = sum(p.numel() for p in model.parameters())
+        print(f"[inverse_wm] device={self.device}  run_dir={self.run_dir}  params={n_params/1e6:.2f}M")
+        print(f"[inverse_wm] k_max={K}  latent_dim={latent_dim}  act_dim={act_dim}")
 
-        weights = _horizon_weights(H, float(cfg["horizon_decay"]))
-        weight_t = torch.tensor(weights, device=self.device, dtype=torch.float32)
-        print(f"[world_model] horizon weights = {[round(w, 4) for w in weights]}")
+        weights = {
+            "action": float(cfg["w_action"]),
+            "latent": float(cfg["w_latent"]),
+            "reward": float(cfg["w_reward"]),
+            "xydist": float(cfg["w_xydist"]),
+        }
+        print(f"[inverse_wm] loss weights = {weights}")
 
         grad_clip = float(cfg["grad_clip"])
         t_start = time.time()
         last_log_t = t_start
 
         for step in range(start_step, total_steps + 1):
-            ensemble.train()
+            model.train()
             b = train_sampler.batch(int(cfg["batch_size"]))
+            states = b["states"]
+            B = states.shape[0]
             with torch.no_grad():
-                flat_states = b["states"].reshape(-1, b["states"].shape[-1])
-                z_seq = encoder(flat_states).view(b["states"].shape[0], H + 1, latent_dim)
+                flat = states.reshape(-1, states.shape[-1])
+                z_seq = encoder.encode_full(flat).view(B, K + 1, latent_dim)
+            z0 = z_seq[:, 0]
+            k = b["k"]
+            zk = z_seq[torch.arange(B, device=self.device), k]
+            k_norm = k.float() / float(K)
 
-            z = z_seq[:, 0]
-            step_losses = []
-            loss_type = str(cfg.get("loss_type", "nll"))
-            for k in range(H):
-                a = b["actions"][:, k]
-                mu_all, log_sigma_all = ensemble(z, a)
-                target = z_seq[:, k + 1]
-                target_e = target.unsqueeze(0).expand_as(mu_all)
-                if loss_type == "mse":
-                    loss_k = F.mse_loss(mu_all, target_e)
-                else:
-                    loss_k = gaussian_nll(mu_all, log_sigma_all, target_e)
-                step_losses.append(loss_k)
-                z = mu_all.mean(dim=0).detach()
-
-            step_loss_t = torch.stack(step_losses)
-            loss = (step_loss_t * weight_t).sum() / weight_t.sum()
+            out = model(z0, zk, k_norm)
+            loss, parts = inverse_losses(out, model, z0, z_seq, b["actions"], k,
+                                         b["reward"], b["xydist"], weights)
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
             if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(ensemble.parameters(), grad_clip)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
             if scheduler is not None:
                 scheduler.step()
@@ -191,40 +172,36 @@ class WorldModelTrainer:
                     "train/steps_per_sec": sps,
                     "train/lr": lr,
                 }
-                _loss_tag = "mse" if str(cfg.get("loss_type", "nll")) == "mse" else "nll"
-                for k, sl in enumerate(step_losses):
-                    log[f"train/{_loss_tag}_step{k+1}"] = sl.item()
-                for k, v in log.items():
-                    self.writer.add_scalar(k, v, step)
-                step_summary = " ".join(f"k{k+1}={sl.item():.3f}" for k, sl in enumerate(step_losses))
-                print(f"[step {step:>7d}] loss={loss.item():.4f}  {step_summary}  lr={lr:.2e}  sps={sps:.0f}")
+                for name, v in parts.items():
+                    log[f"train/{name}_mse"] = v.item()
+                for kk, vv in log.items():
+                    self.writer.add_scalar(kk, vv, step)
+                psummary = " ".join(f"{n}={v.item():.3f}" for n, v in parts.items())
+                print(f"[step {step:>7d}] loss={loss.item():.4f}  {psummary}  lr={lr:.2e}  sps={sps:.0f}")
 
             if step % int(cfg["eval_every"]) == 0 or step == total_steps:
-                vm = full_eval(encoder, ensemble, val_sampler, self.device,
+                vm = full_eval(encoder, model, val_sampler, self.device, latent_dim,
                                n_batches=int(cfg["eval_batches"]),
                                batch_size=int(cfg["eval_batch_size"]),
-                               horizons=tuple(cfg["eval_horizons"]),
-                               loss_type=str(cfg.get("loss_type", "nll")))
-                for k, v in vm.items():
-                    self.writer.add_scalar(k, v, step)
-                key = "val/mse_step1" if str(cfg.get("loss_type", "nll")) == "mse" else "val/nll_step1"
-                val_metric = vm[key]
-                pretty = "  ".join(f"{k.split('/',1)[1]}={v:.4f}" for k, v in vm.items())
+                               k_breakdown=tuple(cfg["eval_k_breakdown"]))
+                for kk, vv in vm.items():
+                    self.writer.add_scalar(kk, vv, step)
+                val_metric = vm["val/action_mse"]
+                pretty = "  ".join(f"{kk.split('/',1)[1]}={vv:.4f}" for kk, vv in vm.items())
                 print(f"[eval  {step:>7d}] {pretty}")
                 if val_metric < best_val:
                     best_val = val_metric
-                    self._save_ckpt(self.checkpointer.best_path, step, ensemble, opt, scheduler, best_val, vm)
+                    self._save_ckpt(self.checkpointer.best_path, step, model, opt, scheduler, best_val, vm)
 
             if step % int(cfg["ckpt_every"]) == 0 or step == total_steps:
-                self._save_ckpt(self.checkpointer.latest_path, step, ensemble, opt, scheduler, best_val, {})
+                self._save_ckpt(self.checkpointer.latest_path, step, model, opt, scheduler, best_val, {})
 
         elapsed = time.time() - t_start
         print(f"[done] total wall time: {elapsed/60:.1f} min")
-        final_vm = full_eval(encoder, ensemble, val_sampler, self.device,
+        final_vm = full_eval(encoder, model, val_sampler, self.device, latent_dim,
                              n_batches=max(16, int(cfg["eval_batches"])),
                              batch_size=int(cfg["eval_batch_size"]),
-                             horizons=tuple(cfg["eval_horizons"]),
-                             loss_type=str(cfg.get("loss_type", "nll")))
+                             k_breakdown=tuple(cfg["eval_k_breakdown"]))
         final_vm["wall_time_min"] = elapsed / 60.0
         final_vm["total_steps"] = total_steps
         final_vm["run_name"] = cfg["run_name"]
@@ -233,7 +210,7 @@ class WorldModelTrainer:
         print(f"[final]  {json.dumps(final_vm, indent=2)}")
         self.writer.close()
         if self.session.run is not None:
-            for k, v in final_vm.items():
-                if isinstance(v, (int, float)):
-                    self.session.run.summary[k] = v
+            for kk, vv in final_vm.items():
+                if isinstance(vv, (int, float)):
+                    self.session.run.summary[kk] = vv
             self.session.finish()

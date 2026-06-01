@@ -69,6 +69,20 @@ class MaskedStateEncoder(nn.Module):
             z = F.normalize(z, dim=-1, eps=1e-8)
         return z
 
+    def encode_full(self, s: torch.Tensor) -> torch.Tensor:
+        return self.forward(s, mask_prob=0.0)
+
+    def encode_goal(self, s: torch.Tensor) -> torch.Tensor:
+        B = s.shape[0]
+        flag = torch.ones((B, 1), device=s.device, dtype=s.dtype)
+        masked_proprio = torch.zeros((B, self.proprio_dim), device=s.device, dtype=s.dtype)
+        xy = s[:, self.proprio_dim:self.proprio_dim + self.xy_dim]
+        s_aug = torch.cat([masked_proprio, xy, flag], dim=-1)
+        z = self.net(s_aug)
+        if self.l2_normalize:
+            z = F.normalize(z, dim=-1, eps=1e-8)
+        return z
+
 
 class ForwardDynamics(nn.Module):
     def __init__(self, latent_dim: int, act_dim: int, hidden_dim: int = 256, n_hidden: int = 2):
