@@ -12,7 +12,7 @@ def full_eval(encoder, model, sampler, device, latent_dim: int,
     K = model.k_max
     k_norm_div = float(K)
 
-    act_vals, lat_vals, rew_vals, xy_vals = [], [], [], []
+    act_vals, lat_vals, rew_vals, xy_vals, k_mae_vals = [], [], [], [], []
     per_k_act = {k: [] for k in k_breakdown if k <= K}
 
     for _ in range(n_batches):
@@ -26,7 +26,9 @@ def full_eval(encoder, model, sampler, device, latent_dim: int,
         zk = z_seq[torch.arange(B, device=device), k]
         k_norm = k.float() / k_norm_div
 
-        out = model(z0, zk, k_norm)
+        out = model(z0, zk) if model.predict_k else model(z0, zk, k_norm)
+        if "k_pred" in out:
+            k_mae_vals.append(((out["k_pred"] * k_norm_div) - k.float()).abs().mean().item())
         idx = torch.arange(K, device=device).unsqueeze(0)
 
         act_mask = (idx < k.unsqueeze(1)).float()
@@ -52,7 +54,7 @@ def full_eval(encoder, model, sampler, device, latent_dim: int,
         kvec = bk["k"]
         zk = z_seq[torch.arange(B, device=device), kvec]
         k_norm = kvec.float() / k_norm_div
-        out = model(z0, zk, k_norm)
+        out = model(z0, zk) if model.predict_k else model(z0, zk, k_norm)
         idx = torch.arange(K, device=device).unsqueeze(0)
         act_mask = (idx < kvec.unsqueeze(1)).float()
         act_sq = ((out["actions"] - bk["actions"]) ** 2).sum(dim=-1)
@@ -66,4 +68,6 @@ def full_eval(encoder, model, sampler, device, latent_dim: int,
     }
     for kb, vals in per_k_act.items():
         out_d[f"val/action_mse_k{kb}"] = float(np.mean(vals))
+    if k_mae_vals:
+        out_d["val/k_mae_steps"] = float(np.mean(k_mae_vals))
     return out_d
