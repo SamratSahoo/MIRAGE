@@ -38,4 +38,9 @@ def inverse_losses(out: dict, model, z0: torch.Tensor, z_seq: torch.Tensor,
         "reward": rew_loss.detach(),
         "xydist": xy_loss.detach(),
     }
+    if "k_pred" in out:
+        k_target = k.float() / float(model.k_max)
+        k_loss = F.mse_loss(out["k_pred"], k_target)
+        total = total + weights.get("k", 1.0) * k_loss
+        parts["k"] = k_loss.detach()
     return total, parts

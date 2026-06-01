@@ -86,6 +86,7 @@ class InverseWorldModelTrainer:
             k_max=K,
             hidden_dim=int(cfg["hidden_dim"]),
             n_hidden=int(cfg["n_hidden"]),
+            predict_k=bool(cfg.get("predict_k", False)),
         ).to(self.device)
 
         opt = torch.optim.AdamW(model.parameters(),
@@ -130,8 +131,9 @@ class InverseWorldModelTrainer:
             "latent": float(cfg["w_latent"]),
             "reward": float(cfg["w_reward"]),
             "xydist": float(cfg["w_xydist"]),
+            "k": float(cfg.get("w_k", 1.0)),
         }
-        print(f"[inverse_wm] loss weights = {weights}")
+        print(f"[inverse_wm] predict_k={model.predict_k}  loss weights = {weights}")
 
         grad_clip = float(cfg["grad_clip"])
         t_start = time.time()
@@ -148,9 +150,11 @@ class InverseWorldModelTrainer:
             z0 = z_seq[:, 0]
             k = b["k"]
             zk = z_seq[torch.arange(B, device=self.device), k]
-            k_norm = k.float() / float(K)
 
-            out = model(z0, zk, k_norm)
+            if model.predict_k:
+                out = model(z0, zk)
+            else:
+                out = model(z0, zk, k.float() / float(K))
             loss, parts = inverse_losses(out, model, z0, z_seq, b["actions"], k,
                                          b["reward"], b["xydist"], weights)
 
