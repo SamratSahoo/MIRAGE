@@ -16,10 +16,10 @@ set -euo pipefail
 source /home/users/asattira/miniconda3/etc/profile.d/conda.sh
 conda activate mirage
 
-PROJECT_DIR="/home/users/asattira/MIRAGE"
+PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$PROJECT_DIR"
 
-export MINARI_DATASETS_PATH=/scratch/users/asattira/mirage/minari
+export MINARI_DATASETS_PATH="$PROJECT_DIR/data/minari"
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 

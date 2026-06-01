@@ -29,7 +29,7 @@ unset __conda_setup
 conda activate mirage
 echo "conda env = $CONDA_DEFAULT_ENV   python = $(which python)"
 
-PROJECT_DIR="/iliad2/u/samrat/MIRAGE"
+PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$PROJECT_DIR" || { echo "ERROR: cannot cd to $PROJECT_DIR"; exit 1; }
 echo "working directory = $(pwd)"
 

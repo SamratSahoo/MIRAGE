@@ -1,14 +1,13 @@
-"""Build ablation_compare.md from results.json files."""
 import json
 from pathlib import Path
 
 import yaml
 
-RUNS_ROOT = Path("/scratch/users/asattira/mirage/runs_world_model")
-CONFIG_ROOT = Path("/home/users/asattira/MIRAGE/config/world_model")
-OUT = Path("/home/users/asattira/MIRAGE/compare/ablation_compare.md")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RUNS_ROOT = PROJECT_ROOT / "runs_world_model"
+CONFIG_ROOT = PROJECT_ROOT / "config" / "world_model"
+OUT = PROJECT_ROOT / "compare" / "ablation_compare.md"
 
-# (run_name, config_yaml). For the main run, the config is the dynamics.yaml itself.
 RUNS = [
     ("dynamics", CONFIG_ROOT / "dynamics.yaml", "main (NLL, n=5, H=3)"),
     ("ablation_single_net", CONFIG_ROOT / "ablation_single_net.yaml", "single-net (n=1)"),
@@ -37,7 +36,7 @@ COLS = [
 
 def fmt(v):
     if isinstance(v, float):
-        if v != v:  # NaN
+        if v != v:
             return "—"
         if abs(v) >= 100 or (abs(v) < 1e-3 and v != 0):
             return f"{v:.4g}"
@@ -51,7 +50,6 @@ def load_run(run_name, cfg_path):
         return None, None
     with open(rj) as f:
         results = json.load(f)
-    # Prefer the per-run frozen config.yaml under run_dir if present
     run_cfg = RUNS_ROOT / run_name / "config.yaml"
     if run_cfg.exists():
         with open(run_cfg) as f:
@@ -90,7 +88,6 @@ def main():
         lines.append(row)
     lines.append("")
 
-    # Interpretation
     def get(run, key, default=float("nan")):
         ent = by_run.get(run)
         if ent is None:
@@ -107,7 +104,6 @@ def main():
 
     lines.append("## Interpretation\n")
     bullets = []
-    # H comparison
     if main_h10 == main_h10 and h1_h10 == h1_h10:
         rel = (h1_h10 - main_h10) / max(abs(main_h10), 1e-9) * 100
         bullets.append(
@@ -116,7 +112,6 @@ def main():
             f"({h1_h10:.4f} vs {main_h10:.4f}), and extending to H=5 gave "
             f"{h5_h10:.4f}."
         )
-    # Ensemble
     if single_h10 == single_h10:
         rel = (single_h10 - main_h10) / max(abs(main_h10), 1e-9) * 100
         bullets.append(
@@ -125,7 +120,6 @@ def main():
             f"the same mean either way, this isolates the regularization effect of the "
             f"ensemble loss rather than the test-time averaging."
         )
-    # Init noise / disagreement
     if noise_h3_disag == noise_h3_disag and main_h3_disag == main_h3_disag:
         ratio = noise_h3_disag / max(main_h3_disag, 1e-9)
         bullets.append(
@@ -134,7 +128,6 @@ def main():
             f"0.1 brought it to {noise_h3_disag:.4f} ({ratio:.1f}× the main-run level), "
             f"{'addressing' if ratio > 2 else 'not meaningfully addressing'} the collapse."
         )
-    # MSE vs NLL
     if mse_h10 == mse_h10:
         rel = (mse_h10 - main_h10) / max(abs(main_h10), 1e-9) * 100
         bullets.append(

@@ -10,6 +10,7 @@ import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 
+from mirage.paths import resolve_path
 from mirage.utils.checkpoint import Checkpointer
 from mirage.utils.wandb_session import WandbSession
 
@@ -28,12 +29,12 @@ class EncoderTrainer:
         if self.device.type == "cuda":
             torch.cuda.manual_seed_all(cfg["seed"])
 
-        self.run_dir = Path(cfg["log_root"]) / cfg["run_name"]
+        self.run_dir = Path(resolve_path(cfg["log_root"])) / cfg["run_name"]
         self.run_dir.mkdir(parents=True, exist_ok=True)
         with open(self.run_dir / "config.yaml", "w") as f:
             yaml.safe_dump(cfg, f)
 
-        self.writer = SummaryWriter(log_dir=str(self.run_dir / "tb"))
+        self.writer = None
         self.checkpointer = Checkpointer(str(self.run_dir), exp_name="encoder", suffix=".pt")
         self.session = WandbSession(
             run_dir=str(self.run_dir),
@@ -130,6 +131,7 @@ class EncoderTrainer:
                 print("[encoder] no checkpoint found; training from scratch")
 
         self.session.init()
+        self.writer = SummaryWriter(log_dir=str(self.run_dir / "tb"))
         n_params = sum(p.numel() for p in list(encoder.parameters()) + list(fwd.parameters()) + list(inv.parameters()))
         print(f"[encoder] device={self.device}  run_dir={self.run_dir}  params={n_params/1e6:.2f}M")
         print(f"[encoder] input_mode={cfg['input_mode']}  state_dim={train_data.state_dim(cfg['input_mode'])}")

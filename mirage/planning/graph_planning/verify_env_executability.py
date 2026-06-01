@@ -1,15 +1,3 @@
-"""STEP 3b - Env-executability (best-effort) for forward/inverse-WM edges.
-
-For a sample of edges added by forward-WM and inverse-WM, set the MuJoCo ant to a
-real source state, apply the predicted action, step ONE env.step (== one dataset
-transition; frame_skip handled internally), encode the resulting full obs, bin to
-a cluster, and check whether it equals / is within top-3 of the target cluster.
-
-Reports executability = fraction of sampled edges whose action moved the ant
-into (top-1) or toward (top-3) the target cluster.
-
-Run:  PYTHONPATH=/home/users/asattira/MIRAGE python mirage/planning/verify_env.py
-"""
 from __future__ import annotations
 
 import importlib.util as _ilu
@@ -35,11 +23,10 @@ def _load_sibling(alias, filename):
     return mod
 
 
-AC = _load_sibling("_aug_common", "aug_common.py")
+AC = _load_sibling("_aug_common", "augment_common.py")
 
 
 def build_obs_full(obs_dict):
-    """AntMaze obs dict -> 29-D full state [obs(27), ach_xy(2)]."""
     return np.concatenate([obs_dict["observation"], obs_dict["achieved_goal"]]).astype(np.float32)
 
 
@@ -60,12 +47,10 @@ def topk_bin(z, centroids, k=3):
 
 def nearest_real_state_in_cluster(cluster, data, cluster_labels_t, trans2state,
                                   centroids, encoder, rng, device="cpu"):
-    """Pick a real source state whose z_t bins to `cluster` (closest to centroid)."""
     mask = cluster_labels_t == cluster
     if not mask.any():
         return None
     st_idx = trans2state[mask]
-    # subsample for speed
     if st_idx.shape[0] > 64:
         st_idx = rng.choice(st_idx, size=64, replace=False)
     states = data.gather_state("full", st_idx)

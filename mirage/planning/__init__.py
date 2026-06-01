@@ -1,1 +1,1 @@
-from .motion_planner import CellGraphPlanner
+from .motion_planning.cell_graph_planner import CellGraphPlanner

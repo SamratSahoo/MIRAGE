@@ -83,5 +83,5 @@ augmentation question should be re-evaluated per-environment when we move beyond
 - `/scratch/users/asattira/mirage/graph/graph_K500.npz` — K=500 graph: `nodes`, `edges`,
   `edge_counts`, `centroids`, per-transition `cluster_labels_t`/`cluster_labels_tp1`, and the
   sampled `start_clusters`/`goal_clusters`.
-- Code: `mirage/planning/graph.py`, `mirage/planning/coverage.py`,
-  `mirage/planning/run_phase1.py`.
+- Code: `mirage/planning/graph_planning/latent_graph.py`, `mirage/planning/graph_planning/coverage.py`,
+  `mirage/planning/graph_planning/run_build_graph.py`.

@@ -2,9 +2,9 @@ batch_size: 256
 ckpt_every: 10000
 cosine_decay_to: 3.0e-05
 dataset_id: D4RL/antmaze/umaze-v1
-datasets_path: /scratch/users/asattira/mirage/minari
+datasets_path: data/minari
 device: cuda
-encoder_ckpt: /scratch/users/asattira/mirage/runs_encoder/dual_input_masked/encoder_best.pt
+encoder_ckpt: runs_encoder/dual_input_masked/encoder_best.pt
 eval_batch_size: 256
 eval_batches: 8
 eval_every: 5000
@@ -19,7 +19,7 @@ input_mode: full
 k_max: 10
 load_default_checkpoint: true
 log_every: 200
-log_root: /scratch/users/asattira/mirage/runs_inverse_world_model
+log_root: runs_inverse_world_model
 lr: 0.0003
 n_hidden: 3
 run_name: inverse

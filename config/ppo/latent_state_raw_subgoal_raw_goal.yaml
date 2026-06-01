@@ -15,7 +15,7 @@ ppo:
   load_default_checkpoint: true
 
   state_mode: latent
-  latent_encoder_path: "/iliad2/u/samrat/MIRAGE/runs_encoder/state_encoder/encoder_best.pt"
+  latent_encoder_path: "runs_encoder/state_encoder/encoder_best.pt"
   goal_encoder_path: ""
   goal_conditioning: ['subgoal', 'goal']
   subgoal_mode: motion_planning

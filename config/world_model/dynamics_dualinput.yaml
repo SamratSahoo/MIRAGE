@@ -1,10 +1,10 @@
 dataset_id: D4RL/antmaze/umaze-v1
-datasets_path: /scratch/users/asattira/mirage/minari
+datasets_path: data/minari
 
-encoder_ckpt: /scratch/users/asattira/mirage/runs_encoder/dual_input_masked/encoder_best.pt
+encoder_ckpt: runs_encoder/dual_input_masked/encoder_best.pt
 input_mode: full
 
-log_root: /scratch/users/asattira/mirage/runs_world_model
+log_root: runs_world_model
 
 load_default_checkpoint: true
 init_from_fwd_ckpt: true

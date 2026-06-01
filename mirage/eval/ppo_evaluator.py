@@ -12,7 +12,8 @@ from mirage.rl.policy_input import PolicyInputBuilder
 from mirage.rl.trainer import _load_encoder_bundle
 from mirage.envs.env_config import configure_env
 from mirage.envs.warp_antmaze import WarpAntMazeEnv
-from mirage.planning.motion_planner import CellGraphPlanner
+from mirage.planning.motion_planning.cell_graph_planner import CellGraphPlanner
+from mirage.planning.graph_planning.latent_graph_planner import LatentGraphPlanner
 
 from .warp_renderer import WarpRenderer
 
@@ -70,10 +71,13 @@ class PPOEvaluator:
         self.subgoal_radius = float(ppo_cfg.get("subgoal_radius", 1.5))
         self.latent_encoder_path = str(ppo_cfg.get("latent_encoder_path", "") or "")
         self.goal_encoder_path = str(ppo_cfg.get("goal_encoder_path", "") or "")
+        self.graph_planning = self.subgoal_mode == "graph_planning"
+        self.gp_cfg = dict(ppo_cfg.get("graph_planning", {}) or {})
+        self.graph_planner = None
 
         self.state_encoder = None
         self.state_encoder_input_mode = None
-        if self.state_mode == "latent":
+        if self.state_mode == "latent" and not self.graph_planning:
             enc, _, _, ecfg = _load_encoder_bundle(self.latent_encoder_path, self.device, with_dynamics=False)
             self.state_encoder = enc
             self.state_encoder_input_mode = str(ecfg["input_mode"])
@@ -81,16 +85,16 @@ class PPOEvaluator:
         self.goal_encoder = None
         self.goal_encoder_input_mode = None
         needs_goal_encoder = any(c in ("latent_goal", "latent_subgoal") for c in self.goal_conditioning)
-        if needs_goal_encoder:
+        if needs_goal_encoder and not self.graph_planning:
             path = self.goal_encoder_path or self.latent_encoder_path
             enc, _, _, ecfg = _load_encoder_bundle(path, self.device, with_dynamics=False)
             self.goal_encoder = enc
             self.goal_encoder_input_mode = str(ecfg["input_mode"])
 
         self.planner = None
-        if self.subgoal_mode == "motion_planning" or any(
+        if not self.graph_planning and (self.subgoal_mode == "motion_planning" or any(
             c in ("subgoal", "latent_subgoal") for c in self.goal_conditioning
-        ):
+        )):
             self.planner = CellGraphPlanner(self.env_id, device=self.device,
                                             subgoal_radius=self.subgoal_radius)
 
@@ -99,6 +103,10 @@ class PPOEvaluator:
             subgoal_planner=self.planner, subgoal_radius=self.subgoal_radius,
         )
 
+        if self.graph_planning:
+            self.graph_planner = LatentGraphPlanner(
+                self.gp_cfg, self.device, self.num_envs, self.state_mode)
+
         self.builder = PolicyInputBuilder(
             state_mode=self.state_mode,
             goal_conditioning=self.goal_conditioning,
@@ -106,6 +114,9 @@ class PPOEvaluator:
             state_encoder_input_mode=self.state_encoder_input_mode,
             goal_encoder=self.goal_encoder,
             goal_encoder_input_mode=self.goal_encoder_input_mode,
+            graph_planning=self.graph_planning,
+            planning_latent_dim=(self.graph_planner.latent_dim
+                                 if self.graph_planner is not None else None),
         )
         self.obs_dim = self.builder.obs_dim
         self.act_dim = int(np.prod(self.envs.single_action_space.shape))
@@ -118,6 +129,12 @@ class PPOEvaluator:
         self.agent = Agent(obs_dim=self.obs_dim, act_dim=self.act_dim).to(self.device)
         self.agent.load_state_dict(agent_state)
         self.agent.eval()
+
+        self._imagine_act_fn = (
+            (lambda z, zk, gxy: self.agent.actor_mean(
+                self.builder.assemble_from_latents(z, zk, zk, goal_xy=gxy)))
+            if self.graph_planning else None
+        )
 
     def run(self) -> dict:
         envs = self.envs
@@ -141,11 +158,22 @@ class PPOEvaluator:
         def video_done() -> bool:
             return all(p is not None for p in video_paths.values())
 
+        eval_done = None
+        if self.graph_planner is not None:
+            self.graph_planner.reset_state()
+            eval_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
         while len(per_episode) < self.num_episodes:
             achieved_xy = envs.achieved_xy.clone()
             subgoal_xy = envs.subgoal_xy.clone() if self.planner is not None else None
             with torch.no_grad():
-                pi = self.builder.assemble(obs, achieved_xy, subgoal_xy)
+                if self.graph_planner is not None:
+                    gp = self.graph_planner.update(obs, achieved_xy, done_mask=eval_done,
+                                                   act_fn=self._imagine_act_fn)
+                    pi = self.builder.assemble(obs, achieved_xy, z_state=gp["z_state"],
+                                               z_goal=gp["z_goal"], z_subgoal=gp["z_subgoal"])
+                else:
+                    pi = self.builder.assemble(obs, achieved_xy, subgoal_xy)
                 if self.deterministic:
                     action = self.agent.actor_mean(pi)
                 else:
@@ -166,6 +194,8 @@ class PPOEvaluator:
 
             next_obs, reward, terminated, truncated, infos = envs.step(action)
             done = infos["done"]
+            if self.graph_planner is not None:
+                eval_done = done.bool()
 
             if len(trajectories) < self.record_trajectory_episodes:
                 traj_buffer["obs"].append(obs[0].detach().cpu().numpy().copy())

@@ -1,8 +1,3 @@
-"""Orchestrate STEP 1-3a: damage -> augment (4 methods) -> graph precision.
-
-Saves all edge sets + provenance to OUT_DIR and a results JSON. Env-executability
-is run separately by verify_env.py (reads the saved forward/inverse provenance).
-"""
 from __future__ import annotations
 
 import importlib.util as _ilu
@@ -30,10 +25,10 @@ def _load_sibling(alias, filename):
     return mod
 
 
-AC = _load_sibling("_aug_common", "aug_common.py")
-H = _load_sibling("_holes", "holes.py")
-A = _load_sibling("_augment", "augment.py")
-V = _load_sibling("_verify_graph", "verify_graph.py")
+AC = _load_sibling("_aug_common", "augment_common.py")
+H = _load_sibling("_holes", "graph_damage.py")
+A = _load_sibling("_augment", "augment_methods.py")
+V = _load_sibling("_verify_graph", "evaluate_augmentation.py")
 
 
 def main():
@@ -53,7 +48,6 @@ def main():
     cluster_labels_t = G["cluster_labels_t"]
     print(f"  done in {time.time()-t0:.1f}s")
 
-    # ---- STEP 1: damage ----
     print("Building damaged graphs...")
     dmg = H.build_damaged_graphs(G, data, trans2state)
     full_set = dmg["full_set"]
@@ -76,8 +70,7 @@ def main():
         print(f"  [{dname}] removed={d['n_removed']} cov_after={d['coverage']:.4f} "
               f"SCC={d['conn']['n_scc']} largestSCC_frac={d['conn']['largest_scc_frac']:.3f}")
 
-    # ---- STEP 2+3a: per damage, per method ----
-    prov_store = {}   # (dname, method) -> provenance dict
+    prov_store = {}
     for dname in ("corridor", "random"):
         d = dmg[dname]
         damaged_set = d["kept"]
@@ -86,14 +79,11 @@ def main():
         damaged_cov = d["coverage"]
         pair_conn = d["pair_connected"]
 
-        # disconnected pairs (for inverse-WM bridging)
         disc_idx = np.where(~pair_conn)[0]
         disc_pairs = [(int(starts[i]), int(goals[i])) for i in disc_idx]
 
-        # source clusters near the cut for corridor; all nodes for random
         if dname == "corridor":
             side = d["side"]
-            # clusters adjacent to a removed edge are "near the cut"
             near = set()
             for (s, t) in removed_set:
                 near.add(s); near.add(t)
@@ -104,7 +94,6 @@ def main():
         print(f"\n=== {dname}: budget={n_budget}, disc_pairs={len(disc_pairs)} ===")
         results["methods"][dname] = {}
 
-        # 1 RANDOM
         added = A.aug_random(damaged_set, nodes, n_budget, seed=0)
         results["methods"][dname]["random"] = V.evaluate_method(
             damaged_set, added, removed_set, full_set, nodes, starts, goals,
@@ -112,7 +101,6 @@ def main():
         np.save(f"{AC.OUT_DIR}/{dname}_random_added.npy", AC.set_to_edges(added))
         print(f"  random:  {results['methods'][dname]['random']}")
 
-        # 2 KNN_LATENT
         added = A.aug_knn_latent(damaged_set, nodes, centroids, n_budget)
         results["methods"][dname]["knn"] = V.evaluate_method(
             damaged_set, added, removed_set, full_set, nodes, starts, goals,
@@ -120,7 +108,6 @@ def main():
         np.save(f"{AC.OUT_DIR}/{dname}_knn_added.npy", AC.set_to_edges(added))
         print(f"  knn:     {results['methods'][dname]['knn']}")
 
-        # 3 FORWARD_WM
         added, prov, gate = A.aug_forward_wm(
             damaged_set, nodes, centroids, data, cluster_labels_t, trans2state,
             encoder, fwd, n_budget, src_clusters=src_clusters, n_actions=16,
@@ -133,7 +120,6 @@ def main():
         prov_store[(dname, "forward_wm")] = prov
         print(f"  fwd_wm:  {res}")
 
-        # 4 INVERSE_WM
         added, prov = A.aug_inverse_wm(
             damaged_set, nodes, centroids, iwm, k_max, disc_pairs, n_budget,
             k_sweep=(3, 5, 8), device=device)
@@ -144,7 +130,6 @@ def main():
         prov_store[(dname, "inverse_wm")] = prov
         print(f"  inv_wm:  {res}")
 
-    # save provenance (with numpy arrays) for env check
     with open(f"{AC.OUT_DIR}/provenance.pkl", "wb") as f:
         pickle.dump(prov_store, f)
     with open(f"{AC.OUT_DIR}/results.json", "w") as f:

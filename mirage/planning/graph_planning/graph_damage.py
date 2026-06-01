@@ -1,12 +1,3 @@
-"""STEP 1 - Build two damaged graphs by knocking holes in G_full.
-
-(a) CORRIDOR CUT: remove every directed edge whose src/dst clusters lie on
-    opposite sides of a spatial y-boundary, splitting the maze in two.
-(b) RANDOM EDGE REMOVAL: remove 50% of non-self edges uniformly (seed 0).
-
-Run standalone:  python -m mirage.planning.holes   (but __init__ imports warp)
-Instead invoke via run_augmentation.py which imports build_damaged_graphs().
-"""
 from __future__ import annotations
 
 import importlib.util as _ilu
@@ -27,22 +18,15 @@ def _load_sibling(alias, filename):
     return mod
 
 
-AC = _load_sibling("_aug_common", "aug_common.py")
+AC = _load_sibling("_aug_common", "augment_common.py")
 
 
 def build_corridor_cut(full_edges_set: set, cluster_mean_xy: np.ndarray,
                        cluster_cnts: np.ndarray):
-    """Cut along the median of cluster-mean-y. Returns (kept_set, removed_set, info).
-
-    Searches a few candidate boundaries (median + offsets) to ensure the cut
-    actually disconnects (start,goal) pairs; picks the one removing a clean
-    middle band.
-    """
     valid = cluster_cnts > 0
     ys = cluster_mean_xy[:, 1]
     med_y = float(np.nanmedian(ys[valid]))
 
-    # side assignment: 0 = below boundary, 1 = above; nan clusters -> -1
     def make_cut(boundary):
         side = np.full(AC.K, -1, dtype=np.int64)
         side[valid] = (ys[valid] >= boundary).astype(np.int64)
@@ -79,7 +63,6 @@ def build_random_removal(full_edges_set: set, frac: float = 0.5, seed: int = 0):
 
 
 def build_damaged_graphs(G, data, trans_to_state_idx):
-    """Return dict of two damage scenarios, each with kept/removed edge sets + stats."""
     full_set = AC.edges_to_set(G["edges"], drop_self=True)
     nodes = G["nodes"]
     starts = G["start_clusters"]
@@ -88,14 +71,12 @@ def build_damaged_graphs(G, data, trans_to_state_idx):
     mean_xy, cnts = AC.get_cluster_mean_xy(
         data, G["cluster_labels_t"], trans_to_state_idx)
 
-    # baseline coverage on full graph
     base_cov = AC.pair_connected(full_set, starts, goals).mean()
 
     out = {"full_set": full_set, "nodes": nodes, "mean_xy": mean_xy,
            "cnts": cnts, "base_cov": float(base_cov),
            "starts": starts, "goals": goals}
 
-    # (a) corridor
     kept_c, rm_c, info_c, side = build_corridor_cut(full_set, mean_xy, cnts)
     cov_c = AC.pair_connected(kept_c, starts, goals)
     conn_c = AC.connectivity_stats(kept_c, nodes)
@@ -105,7 +86,6 @@ def build_damaged_graphs(G, data, trans_to_state_idx):
         "conn": conn_c, "n_removed": len(rm_c),
     }
 
-    # (b) random
     kept_r, rm_r = build_random_removal(full_set, frac=0.5, seed=0)
     cov_r = AC.pair_connected(kept_r, starts, goals)
     conn_r = AC.connectivity_stats(kept_r, nodes)

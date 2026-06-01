@@ -1,5 +1,3 @@
-"""Build compare/graph_augmentation.png and compare/graph_augmentation.md from
-the saved results.json + env_results.json."""
 from __future__ import annotations
 
 import json
@@ -10,8 +8,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-OUT = "/scratch/users/asattira/mirage/graph_aug"
-COMP = "/home/users/asattira/MIRAGE/compare"
+from mirage.paths import project_path
+
+OUT = project_path("graph_aug")
+COMP = project_path("compare")
 METHODS = ["random", "knn", "forward_wm", "inverse_wm"]
 LABELS = {"random": "random", "knn": "kNN-latent",
           "forward_wm": "forward-WM", "inverse_wm": "inverse-WM"}
@@ -21,14 +21,12 @@ def main():
     res = json.load(open(f"{OUT}/results.json"))
     env = json.load(open(f"{OUT}/env_results.json"))
 
-    # ---- figure ----
     fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
     for ax, dname in zip(axes, ("corridor", "random")):
         m = res["methods"][dname]
         x = np.arange(len(METHODS))
         cov = [m[k]["coverage"] for k in METHODS]
         prec = [m[k]["edge_precision"] for k in METHODS]
-        # executability: only fwd/inv have it (top3)
         ex = []
         for k in METHODS:
             if k in ("forward_wm", "inverse_wm"):
@@ -50,7 +48,6 @@ def main():
     fig.savefig(f"{COMP}/graph_augmentation.png", dpi=130)
     print(f"wrote {COMP}/graph_augmentation.png")
 
-    # ---- markdown ----
     L = []
     A = L.append
     A("# Graph Augmentation Experiment (MIRAGE, AntMaze umaze-v1)\n")

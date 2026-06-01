@@ -1,35 +1,24 @@
-"""Shared utilities for the graph-augmentation experiment.
-
-Loads models/data WITHOUT triggering mirage/planning/__init__.py (which imports
-`warp`, unavailable on login nodes). We import sibling modules by file path.
-
-All edge sets are represented as Python sets of (src, dst) int tuples over the
-K=500 cluster-index space. The ground-truth graph G_full's edge set is the
-authority for which edges are "real" (observed in the offline data).
-"""
 from __future__ import annotations
 
 import os
 import numpy as np
 import torch
 
-GRAPH_NPZ = "/scratch/users/asattira/mirage/graph/graph_K500.npz"
-ENCODER_CKPT = "/scratch/users/asattira/mirage/runs_encoder/dual_input_masked/encoder_best.pt"
-WM_CKPT = "/scratch/users/asattira/mirage/runs_world_model/dynamics_dualinput/world_model_best.pt"
-IWM_CKPT = "/scratch/users/asattira/mirage/runs_inverse_world_model/inverse/inverse_world_model_best.pt"
+from mirage.paths import project_path
+
+GRAPH_NPZ = project_path("checkpoints", "graph", "graph_K500.npz")
+ENCODER_CKPT = project_path("runs_encoder", "dual_input_masked", "encoder_best.pt")
+WM_CKPT = project_path("runs_world_model", "dynamics_dualinput", "world_model_best.pt")
+IWM_CKPT = project_path("runs_inverse_world_model", "inverse", "inverse_world_model_best.pt")
 DATASET_ID = "D4RL/antmaze/umaze-v1"
-MINARI = "/scratch/users/asattira/mirage/minari"
-OUT_DIR = "/scratch/users/asattira/mirage/graph_aug"
+MINARI = project_path("data", "minari")
+OUT_DIR = project_path("graph_aug")
 K = 500
 LATENT_DIM = 16
 ACT_DIM = 8
 
 
-# --------------------------------------------------------------------------- #
-# Graph container
-# --------------------------------------------------------------------------- #
 def load_full_graph():
-    """Return dict with the saved G_full arrays."""
     d = np.load(GRAPH_NPZ)
     return {k: d[k] for k in d.keys()}
 
@@ -50,9 +39,6 @@ def set_to_edges(edge_set: set) -> np.ndarray:
     return np.array(sorted(edge_set), dtype=np.int64)
 
 
-# --------------------------------------------------------------------------- #
-# Connectivity / coverage
-# --------------------------------------------------------------------------- #
 def adjacency_csr(edge_set: set, k: int = K):
     from scipy.sparse import csr_matrix
     if not edge_set:
@@ -83,7 +69,6 @@ def connectivity_stats(edge_set: set, nodes: np.ndarray, k: int = K) -> dict:
 
 def pair_connected(edge_set: set, start_clusters: np.ndarray,
                    goal_clusters: np.ndarray, k: int = K) -> np.ndarray:
-    """Return boolean mask (n_pairs,): is goal reachable from start?"""
     from scipy.sparse.csgraph import dijkstra
     A = adjacency_csr(edge_set, k)
     uniq = np.unique(start_clusters)
@@ -95,11 +80,7 @@ def pair_connected(edge_set: set, start_clusters: np.ndarray,
     return np.isfinite(d) | same
 
 
-# --------------------------------------------------------------------------- #
-# Per-cluster real states
-# --------------------------------------------------------------------------- #
 def build_trans_to_state_idx(data) -> np.ndarray:
-    """For each transition (flat act index), its SOURCE state flat index."""
     idx = np.empty(data.n_trans, dtype=np.int64)
     for e in range(data.n_ep):
         ss = int(data.state_starts[e])
@@ -109,13 +90,8 @@ def build_trans_to_state_idx(data) -> np.ndarray:
     return idx
 
 
-# --------------------------------------------------------------------------- #
-# Binning
-# --------------------------------------------------------------------------- #
 def bin_latents(z: np.ndarray, centroids: np.ndarray):
-    """Nearest-centroid (L2) cluster id for each row of z. Returns (labels, dist)."""
-    # ||z - c||^2 = ||z||^2 - 2 z.c + ||c||^2
-    zc = z @ centroids.T            # (N,K)
+    zc = z @ centroids.T
     cn = (centroids * centroids).sum(1)[None, :]
     zn = (z * z).sum(1)[:, None]
     d2 = zn - 2 * zc + cn
@@ -124,9 +100,6 @@ def bin_latents(z: np.ndarray, centroids: np.ndarray):
     return lbl.astype(np.int64), dist
 
 
-# --------------------------------------------------------------------------- #
-# Model loading
-# --------------------------------------------------------------------------- #
 def load_encoder(device="cpu"):
     from mirage.encoder.load import load_encoder as _le
     return _le(ENCODER_CKPT, device)
@@ -158,7 +131,6 @@ def load_inverse_wm(device="cpu"):
 
 @torch.no_grad()
 def fwd_predict(fwd, z, a):
-    """z (B,16), a (B,8) torch -> z_next (B,16) L2-normalized."""
     mu_all, _ = fwd(z, a)
     z_next = torch.nn.functional.normalize(mu_all.mean(0), dim=-1)
     return z_next
@@ -169,8 +141,7 @@ def l2norm_np(x):
 
 
 def get_cluster_mean_xy(data, cluster_labels_t, trans_to_state_idx, k: int = K):
-    """Mean achieved xy per cluster (over source states of transitions in cluster)."""
-    xy = data.ach[trans_to_state_idx]   # (n_trans, 2)
+    xy = data.ach[trans_to_state_idx]
     sums = np.zeros((k, 2), dtype=np.float64)
     cnts = np.zeros(k, dtype=np.int64)
     np.add.at(sums, cluster_labels_t, xy)

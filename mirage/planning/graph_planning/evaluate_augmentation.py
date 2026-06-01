@@ -1,11 +1,3 @@
-"""STEP 3a - Graph-precision verification.
-
-For each (damaged graph x method):
-  - coverage recovery: fraction of 2000 pairs reconnected after augmentation,
-    and delta vs damaged.
-  - edge PRECISION = |added edges that exist in G_full| / |added edges|.
-  - edge RECALL    = |removed real edges re-added| / |removed|.
-"""
 from __future__ import annotations
 
 import importlib.util as _ilu
@@ -26,7 +18,7 @@ def _load_sibling(alias, filename):
     return mod
 
 
-AC = _load_sibling("_aug_common", "aug_common.py")
+AC = _load_sibling("_aug_common", "augment_common.py")
 
 
 def evaluate_method(damaged_set: set, added_set: set, removed_set: set,

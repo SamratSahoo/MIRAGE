@@ -1,14 +1,3 @@
-"""Validate dual-input masked encoder consistency: full-state vs goal (xy-only).
-
-Determines whether ``encode_goal`` lands near ``encode_full`` for the same
-physical location, which decides if the encoder is usable for goal-conditioned
-graph planning.
-
-Run from the project root (so ``mirage`` imports resolve), CPU is fine::
-
-    export MINARI_DATASETS_PATH=/scratch/users/asattira/mirage/minari
-    python -m mirage.encoder.masking_eval
-"""
 
 from __future__ import annotations
 
@@ -19,18 +8,18 @@ import torch
 
 from mirage.encoder.load import load_encoder
 from mirage.encoder.data import load_antmaze
+from mirage.paths import project_path
 
 
-CKPT = "/scratch/users/asattira/mirage/runs_encoder/dual_input_masked/encoder_best.pt"
+CKPT = project_path("runs_encoder", "dual_input_masked", "encoder_best.pt")
 DATASET = "D4RL/antmaze/umaze-v1"
-MINARI_PATH = "/scratch/users/asattira/mirage/minari"
-OUT_DIR = "compare"
+MINARI_PATH = project_path("data", "minari")
+OUT_DIR = project_path("compare")
 N_SAMPLE = 20000
 SEED = 0
 
 
 def encode_all(encoder, s_np: np.ndarray, batch: int = 4096):
-    """Encode states with encode_full and encode_goal, return (z_full, z_goal)."""
     zf, zg = [], []
     with torch.no_grad():
         for i in range(0, s_np.shape[0], batch):
@@ -41,7 +30,6 @@ def encode_all(encoder, s_np: np.ndarray, batch: int = 4096):
 
 
 def ridge_xy_r2(Z: np.ndarray, Y: np.ndarray, seed: int = 0):
-    """Closed-form ridge probe latent->xy, return held-out R^2 (mean over dims)."""
     rng = np.random.default_rng(seed)
     n = Z.shape[0]
     perm = rng.permutation(n)
@@ -49,7 +37,6 @@ def ridge_xy_r2(Z: np.ndarray, Y: np.ndarray, seed: int = 0):
     te, tr = perm[:n_te], perm[n_te:]
     Ztr, Ytr = Z[tr], Y[tr]
     Zte, Yte = Z[te], Y[te]
-    # center using train stats
     zmu, ymu = Ztr.mean(0), Ytr.mean(0)
     Ztr_c, Ytr_c = Ztr - zmu, Ytr - ymu
     d = Ztr_c.shape[1]
@@ -62,22 +49,18 @@ def ridge_xy_r2(Z: np.ndarray, Y: np.ndarray, seed: int = 0):
 
 
 def cluster_agreement(z_full: np.ndarray, z_goal: np.ndarray, K: int):
-    """Fit k-means on z_full, report same-cluster and top-3 agreement fractions."""
     from sklearn.cluster import KMeans
 
     km = KMeans(n_clusters=K, n_init=10, random_state=0)
     lab_full = km.fit_predict(z_full)
-    cents = km.cluster_centers_  # (K, d)
+    cents = km.cluster_centers_
     lab_goal = km.predict(z_goal)
     same = float(np.mean(lab_full == lab_goal))
 
-    # top-3: is z_full's cluster among z_goal's 3 nearest centroids?
-    # dist from each z_goal point to all centroids
-    # ||g - c||^2 = ||g||^2 - 2 g.c + ||c||^2 ; argsort over c
-    gc = z_goal @ cents.T  # (N, K)
-    cc = (cents ** 2).sum(1)[None, :]  # (1, K)
-    d2 = -2.0 * gc + cc  # ||g||^2 constant per row, irrelevant for ranking
-    top3 = np.argsort(d2, axis=1)[:, :3]  # (N, 3) nearest centroids for z_goal
+    gc = z_goal @ cents.T
+    cc = (cents ** 2).sum(1)[None, :]
+    d2 = -2.0 * gc + cc
+    top3 = np.argsort(d2, axis=1)[:, :3]
     in_top3 = float(np.mean((top3 == lab_full[:, None]).any(axis=1)))
     return same, in_top3
 
@@ -98,15 +81,13 @@ def main():
     rng = np.random.default_rng(SEED)
     n = min(N_SAMPLE, n_val_states)
     idx = rng.choice(n_val_states, size=n, replace=False)
-    s = val.gather_state("full", idx).astype(np.float32)  # (n, 29)
+    s = val.gather_state("full", idx).astype(np.float32)
     xy = s[:, 27:29].copy()
     print(f"  sampled {n} val states, s shape {s.shape}")
 
     z_full, z_goal = encode_all(encoder, s)
     print(f"  z_full {z_full.shape}, z_goal {z_goal.shape}")
 
-    # ---- 1. per-state cosine similarity ----
-    # latents are L2-normalized; cosine = dot product
     cos = (z_full * z_goal).sum(1)
     cos_stats = dict(
         mean=float(cos.mean()), median=float(np.median(cos)),
@@ -116,13 +97,11 @@ def main():
     print(f"    mean={cos_stats['mean']:.4f}  median={cos_stats['median']:.4f}  "
           f"p10={cos_stats['p10']:.4f}  min={cos_stats['min']:.4f}")
 
-    # ---- 2. euclidean distance ----
     dist = np.linalg.norm(z_full - z_goal, axis=1)
     dist_stats = dict(
         mean=float(dist.mean()), median=float(np.median(dist)),
         p90=float(np.percentile(dist, 90)),
     )
-    # mean pairwise distance between random *different* full latents
     m = min(4000, n)
     a = rng.choice(n, size=m, replace=False)
     b = rng.choice(n, size=m, replace=False)
@@ -135,7 +114,6 @@ def main():
     print(f"    mean pairwise dist between random DIFFERENT full latents = {rand_mean:.4f}")
     print(f"    ratio (full-vs-goal mean / random mean) = {dist_stats['mean']/rand_mean:.4f}")
 
-    # ---- 3. cluster-agreement test ----
     print("\n[3] Cluster-agreement (k-means on z_full):")
     cluster_results = {}
     for K in (200, 500, 1000):
@@ -143,17 +121,14 @@ def main():
         cluster_results[K] = dict(same=same, top3=top3)
         print(f"    K={K:4d}: same-cluster={same:.4f}   within-top3={top3:.4f}")
 
-    # ---- 4. xy-recovery comparison ----
     r2_full, r2_full_per = ridge_xy_r2(z_full, xy, seed=0)
     r2_goal, r2_goal_per = ridge_xy_r2(z_goal, xy, seed=0)
     print("\n[4] xy-recovery ridge probe (held-out R^2):")
     print(f"    z_full -> xy : R^2={r2_full:.4f}  per-dim={[round(v,4) for v in r2_full_per]}")
     print(f"    z_goal -> xy : R^2={r2_goal:.4f}  per-dim={[round(v,4) for v in r2_goal_per]}")
 
-    # ---- 5. PCA overlay figure ----
     make_figure(z_full, z_goal, xy, rng)
 
-    # ---- write markdown summary ----
     write_summary(cos_stats, dist_stats, rand_mean, cluster_results,
                   r2_full, r2_goal, n)
     print(f"\nWrote {OUT_DIR}/masking_consistency.md and "
@@ -168,11 +143,10 @@ def make_figure(z_full, z_goal, xy, rng):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    # PCA via SVD on centered z_full; apply SAME projection to both
     mu = z_full.mean(0)
     Zc = z_full - mu
     U, S, Vt = np.linalg.svd(Zc, full_matrices=False)
-    P = Vt[:2].T  # (d, 2)
+    P = Vt[:2].T
     pf = Zc @ P
     pg = (z_goal - mu) @ P
 
@@ -187,7 +161,6 @@ def make_figure(z_full, z_goal, xy, rng):
                     vmin=vmin, vmax=vmax, alpha=0.6)
     axes[1].set_title("z_goal (same PCA proj), colored by xy[0]")
 
-    # overlay connecting lines on the goal panel for a small subsample
     k = min(200, z_full.shape[0])
     sub = rng.choice(z_full.shape[0], size=k, replace=False)
     for j in sub:
@@ -211,8 +184,6 @@ def write_summary(cos, dist, rand_mean, clusters, r2_full, r2_goal, n):
     cos_ok = cos["mean"] > 0.85
     clu_ok = same500 > 0.5 or top3_500 > 0.75
     r2_ok = abs(r2_full - r2_goal) < 0.15 and r2_goal > 0.5
-    # strong yes: high cosine AND corroborating evidence.
-    # borderline yes: cosine in [0.85, 0.9] but cluster + r2 evidence both hold.
     strong_yes = cos_strong and (clu_ok or r2_ok)
     border_yes = cos_ok and clu_ok and r2_ok
     verdict_yes = strong_yes or border_yes

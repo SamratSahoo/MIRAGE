@@ -9,11 +9,11 @@
       "stats": {
         "K": 200,
         "n_nodes": 200,
-        "n_edges": 2788,
-        "n_edges_nonself": 2588,
+        "n_edges": 2739,
+        "n_edges_nonself": 2539,
         "n_self_loops": 200,
-        "mean_out_degree": 12.94,
-        "mean_in_degree": 12.94,
+        "mean_out_degree": 12.695,
+        "mean_in_degree": 12.695,
         "n_wcc": 1,
         "largest_wcc": 200,
         "n_scc": 1,
@@ -22,11 +22,11 @@
       "coverage": {
         "n_pairs": 2000,
         "frac_connected": 1.0,
-        "frac_same_cluster": 0.006,
+        "frac_same_cluster": 0.005,
         "n_connected": 2000,
-        "path_mean": 2.6006036217303823,
+        "path_mean": 2.587437185929648,
         "path_median": 3.0,
-        "path_p90": 4.0,
+        "path_p90": 3.0,
         "path_max": 4.0
       }
     },
@@ -34,49 +34,49 @@
       "stats": {
         "K": 500,
         "n_nodes": 500,
-        "n_edges": 6696,
-        "n_edges_nonself": 6196,
+        "n_edges": 6669,
+        "n_edges_nonself": 6169,
         "n_self_loops": 500,
-        "mean_out_degree": 12.392,
-        "mean_in_degree": 12.392,
+        "mean_out_degree": 12.338,
+        "mean_in_degree": 12.338,
         "n_wcc": 1,
         "largest_wcc": 500,
-        "n_scc": 4,
-        "largest_scc": 497
+        "n_scc": 9,
+        "largest_scc": 491
       },
       "coverage": {
         "n_pairs": 2000,
         "frac_connected": 1.0,
-        "frac_same_cluster": 0.001,
+        "frac_same_cluster": 0.0015,
         "n_connected": 2000,
-        "path_mean": 3.430930930930931,
+        "path_mean": 3.6479719579369054,
         "path_median": 3.0,
-        "path_p90": 5.0,
-        "path_max": 8.0
+        "path_p90": 6.0,
+        "path_max": 9.0
       }
     },
     "1000": {
       "stats": {
         "K": 1000,
         "n_nodes": 1000,
-        "n_edges": 13763,
-        "n_edges_nonself": 12763,
+        "n_edges": 13818,
+        "n_edges_nonself": 12818,
         "n_self_loops": 1000,
-        "mean_out_degree": 12.763,
-        "mean_in_degree": 12.763,
+        "mean_out_degree": 12.818,
+        "mean_in_degree": 12.818,
         "n_wcc": 1,
         "largest_wcc": 1000,
-        "n_scc": 14,
-        "largest_scc": 985
+        "n_scc": 19,
+        "largest_scc": 979
       },
       "coverage": {
         "n_pairs": 2000,
         "frac_connected": 1.0,
-        "frac_same_cluster": 0.001,
+        "frac_same_cluster": 0.0,
         "n_connected": 2000,
-        "path_mean": 4.4624624624624625,
+        "path_mean": 4.518,
         "path_median": 4.0,
-        "path_p90": 7.0,
+        "path_p90": 8.0,
         "path_max": 11.0
       }
     }

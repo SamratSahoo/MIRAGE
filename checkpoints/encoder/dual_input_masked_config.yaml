@@ -3,7 +3,7 @@ ckpt_every: 5000
 cold_init_eps: 1.0e-12
 contrastive_window: 32
 dataset_id: D4RL/antmaze/umaze-v1
-datasets_path: /scratch/users/asattira/mirage/minari
+datasets_path: data/minari
 device: cuda
 dyn_hidden_dim: 256
 dyn_n_hidden: 2
@@ -19,7 +19,7 @@ l2_normalize: true
 latent_dim: 16
 load_default_checkpoint: true
 log_every: 200
-log_root: /scratch/users/asattira/mirage/runs_encoder
+log_root: runs_encoder
 lr: 0.0003
 mask_prob: 0.3
 n_hidden: 3

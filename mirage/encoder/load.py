@@ -27,6 +27,8 @@ def build_encoder(enc_cfg: dict):
 
 
 def load_encoder(ckpt_path: str, device="cpu", eval_mode: bool = True):
+    from mirage.paths import resolve_path
+    ckpt_path = resolve_path(ckpt_path)
     ck = torch.load(ckpt_path, map_location=device, weights_only=False)
     enc_cfg = ck["config"]
     encoder = build_encoder(enc_cfg)

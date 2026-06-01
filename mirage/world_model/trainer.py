@@ -11,6 +11,7 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 
 from mirage.encoder.load import load_encoder
+from mirage.paths import resolve_path
 from mirage.utils.checkpoint import Checkpointer
 from mirage.utils.wandb_session import WandbSession
 
@@ -33,12 +34,12 @@ class WorldModelTrainer:
         if self.device.type == "cuda":
             torch.cuda.manual_seed_all(cfg["seed"])
 
-        self.run_dir = Path(cfg["log_root"]) / cfg["run_name"]
+        self.run_dir = Path(resolve_path(cfg["log_root"])) / cfg["run_name"]
         self.run_dir.mkdir(parents=True, exist_ok=True)
         with open(self.run_dir / "config.yaml", "w") as f:
             yaml.safe_dump(cfg, f)
 
-        self.writer = SummaryWriter(log_dir=str(self.run_dir / "tb"))
+        self.writer = None
         self.checkpointer = Checkpointer(str(self.run_dir), exp_name="world_model", suffix=".pt")
         self.session = WandbSession(
             run_dir=str(self.run_dir),
@@ -136,6 +137,7 @@ class WorldModelTrainer:
                 print("[world_model] no resumable checkpoint; starting fresh (encoder fwd init used)")
 
         self.session.init()
+        self.writer = SummaryWriter(log_dir=str(self.run_dir / "tb"))
         n_params = sum(p.numel() for p in ensemble.parameters())
         print(f"[world_model] device={self.device}  run_dir={self.run_dir}  params={n_params/1e6:.2f}M")
         print(f"[world_model] n_members={cfg['n_members']}  H={H}  latent_dim={latent_dim}  act_dim={act_dim}")

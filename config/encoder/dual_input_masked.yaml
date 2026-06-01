@@ -1,8 +1,8 @@
 dataset_id: D4RL/antmaze/umaze-v1
-datasets_path: /scratch/users/asattira/mirage/minari
+datasets_path: data/minari
 
 input_mode: full
-log_root: /scratch/users/asattira/mirage/runs_encoder
+log_root: runs_encoder
 
 load_default_checkpoint: true
 

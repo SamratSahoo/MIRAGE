@@ -1,14 +1,3 @@
-"""Build a latent-state graph from offline AntMaze data with a frozen encoder.
-
-Pipeline:
-  1. Load dual-input masked encoder + full AntMaze dataset.
-  2. Encode every transition's current/next state full-latent (z_t, z_{t+1}).
-  3. K-means cluster the latents (MiniBatchKMeans).
-  4. Build a directed graph: nodes=clusters, edges=unique (c_t, c_{t+1}) pairs.
-  5. Report graph stats per K.
-
-CPU-only is fine: ~1M states encode in ~15s.
-"""
 from __future__ import annotations
 
 import time
@@ -19,19 +8,16 @@ import torch
 
 from mirage.encoder.data import AntmazeData, load_antmaze
 from mirage.encoder.load import load_encoder
+from mirage.paths import project_path
 
-DEFAULT_ENCODER = "/scratch/users/asattira/mirage/runs_encoder/dual_input_masked/encoder_best.pt"
+DEFAULT_ENCODER = project_path("runs_encoder", "dual_input_masked", "encoder_best.pt")
 DEFAULT_DATASET = "D4RL/antmaze/umaze-v1"
-DEFAULT_MINARI = "/scratch/users/asattira/mirage/minari"
+DEFAULT_MINARI = project_path("data", "minari")
 
 
-# --------------------------------------------------------------------------- #
-# Encoding
-# --------------------------------------------------------------------------- #
 @torch.no_grad()
 def encode_states_full(encoder, states: np.ndarray, batch: int = 32768,
                        device: str = "cpu") -> np.ndarray:
-    """Encode an (N,29) array of full states -> (N,16) L2-normalized latents."""
     out = np.empty((states.shape[0], encoder.latent_dim), dtype=np.float32)
     for i in range(0, states.shape[0], batch):
         s = torch.from_numpy(np.ascontiguousarray(states[i:i + batch])).to(device)
@@ -43,7 +29,6 @@ def encode_states_full(encoder, states: np.ndarray, batch: int = 32768,
 @torch.no_grad()
 def encode_states_goal(encoder, states: np.ndarray, batch: int = 32768,
                        device: str = "cpu") -> np.ndarray:
-    """Encode (N,29) states with the goal head (xy-only + mask flag)."""
     out = np.empty((states.shape[0], encoder.latent_dim), dtype=np.float32)
     for i in range(0, states.shape[0], batch):
         s = torch.from_numpy(np.ascontiguousarray(states[i:i + batch])).to(device)
@@ -54,15 +39,6 @@ def encode_states_goal(encoder, states: np.ndarray, batch: int = 32768,
 
 def encode_all_transition_latents(data: AntmazeData, encoder, device: str = "cpu",
                                   verbose: bool = True):
-    """Encode every state once, then index out z_t / z_{t+1} per transition.
-
-    A transition j (global act index) belongs to episode e. The transition at
-    local step t in episode e maps to state indices state_starts[e]+t (z_t) and
-    +t+1 (z_{t+1}). We build flat index arrays for z_t and z_{t+1} across all
-    episodes, encode every state ONCE, then gather.
-
-    Returns (z_t, z_tp1) each (n_trans, latent_dim).
-    """
     t0 = time.time()
     n_states = data.obs.shape[0]
     all_states = data.gather_state("full", np.arange(n_states))
@@ -70,7 +46,6 @@ def encode_all_transition_latents(data: AntmazeData, encoder, device: str = "cpu
     if verbose:
         print(f"  encoded {n_states} states in {time.time()-t0:.1f}s")
 
-    # Build per-transition state indices.
     idx_t = np.empty(data.n_trans, dtype=np.int64)
     idx_tp1 = np.empty(data.n_trans, dtype=np.int64)
     for e in range(data.n_ep):
@@ -83,11 +58,7 @@ def encode_all_transition_latents(data: AntmazeData, encoder, device: str = "cpu
     return z_all[idx_t], z_all[idx_tp1], z_all
 
 
-# --------------------------------------------------------------------------- #
-# Clustering + graph
-# --------------------------------------------------------------------------- #
 def fit_kmeans(latents: np.ndarray, K: int, seed: int = 0, sample: int | None = 300_000):
-    """Fit MiniBatchKMeans. Optionally fit on a random subsample for speed."""
     from sklearn.cluster import MiniBatchKMeans
     rng = np.random.default_rng(seed)
     fit_X = latents
@@ -104,13 +75,12 @@ def fit_kmeans(latents: np.ndarray, K: int, seed: int = 0, sample: int | None = 
 class LatentGraph:
     K: int
     n_nodes: int
-    nodes: np.ndarray          # sorted array of cluster ids that appear
-    edges: np.ndarray          # (E,2) directed (src,dst) including self-loops
-    edge_counts: np.ndarray    # (E,) transition counts per edge
-    centroids: np.ndarray      # (K,latent_dim)
+    nodes: np.ndarray
+    edges: np.ndarray
+    edge_counts: np.ndarray
+    centroids: np.ndarray
 
     def adjacency_csr(self, drop_self: bool = False):
-        """scipy CSR adjacency over the full K-index space (unit weights)."""
         from scipy.sparse import csr_matrix
         e = self.edges
         if drop_self:
@@ -122,7 +92,6 @@ class LatentGraph:
 
 def build_graph(c_t: np.ndarray, c_tp1: np.ndarray, centroids: np.ndarray,
                 K: int) -> LatentGraph:
-    """Build directed graph from cluster-assignment sequences."""
     pairs = np.stack([c_t, c_tp1], axis=1)
     uniq, counts = np.unique(pairs, axis=0, return_counts=True)
     nodes = np.unique(np.concatenate([c_t, c_tp1]))
@@ -131,26 +100,22 @@ def build_graph(c_t: np.ndarray, c_tp1: np.ndarray, centroids: np.ndarray,
 
 
 def graph_stats(g: LatentGraph) -> dict:
-    """Compute structural stats. Self-loops counted but excluded from degree/conn."""
     e = g.edges
     self_mask = e[:, 0] == e[:, 1]
     n_self = int(self_mask.sum())
-    e_ns = e[~self_mask]  # non-self edges
+    e_ns = e[~self_mask]
 
-    # degrees over non-self edges, averaged over nodes that actually appear
     out_deg = np.bincount(e_ns[:, 0], minlength=g.K)
     in_deg = np.bincount(e_ns[:, 1], minlength=g.K)
     appear = g.nodes
     mean_out = float(out_deg[appear].mean())
     mean_in = float(in_deg[appear].mean())
 
-    # connectivity via scipy csgraph on non-self adjacency
     from scipy.sparse import csr_matrix
     from scipy.sparse.csgraph import connected_components
     A = csr_matrix((np.ones(e_ns.shape[0]), (e_ns[:, 0], e_ns[:, 1])), shape=(g.K, g.K))
     n_wcc, wcc_lbl = connected_components(A, directed=True, connection="weak")
     n_scc, scc_lbl = connected_components(A, directed=True, connection="strong")
-    # only count components that contain appearing nodes
     appear_mask = np.zeros(g.K, dtype=bool)
     appear_mask[appear] = True
     wcc_sizes = np.bincount(wcc_lbl[appear_mask])
