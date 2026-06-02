@@ -23,10 +23,10 @@ ppo:
   # is disabled and the rare disconnected (start, goal) node pairs fall back to the goal latent.
   # Pure graph-path planning (the common case) is unaffected.
   graph_planning:
-    encoder_ckpt: runs_encoder/dual_input_masked/encoder_best.pt
-    graph_npz: checkpoints/graph/graph_K500.npz
-    forward_wm_ckpt: checkpoints/forward_world_model/dynamics_dualinput_best.pt
-    inverse_wm_ckpt: checkpoints/inverse_world_model/inverse_best.pt
+    encoder_ckpt: runs_encoder/dual_input_masked_recon/encoder_best.pt
+    graph_npz: checkpoints/graph/graph_K500_recon.npz
+    forward_wm_ckpt: runs_world_model/dynamics_dualinput/world_model_best.pt
+    inverse_wm_ckpt: runs_inverse_world_model/inverse/inverse_world_model_best.pt
     K: 500
     disjoint_components: 5      # force the graph into >= k disjoint components to exercise imagination (null = leave graph intact)
     imagination: forward

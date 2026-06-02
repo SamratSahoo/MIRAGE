@@ -9,7 +9,7 @@ import torch
 
 from mirage.rl.agent import Agent
 from mirage.rl.policy_input import PolicyInputBuilder
-from mirage.rl.trainer import _load_encoder_bundle
+from mirage.encoder.load import is_masked, load_encoder
 from mirage.envs.env_config import configure_env
 from mirage.envs.warp_antmaze import WarpAntMazeEnv
 from mirage.planning.motion_planning.cell_graph_planner import CellGraphPlanner
@@ -69,27 +69,12 @@ class PPOEvaluator:
         self.goal_conditioning = list(ppo_cfg.get("goal_conditioning", ["goal"]))
         self.subgoal_mode = str(ppo_cfg.get("subgoal_mode", "") or "")
         self.subgoal_radius = float(ppo_cfg.get("subgoal_radius", 1.5))
-        self.latent_encoder_path = str(ppo_cfg.get("latent_encoder_path", "") or "")
-        self.goal_encoder_path = str(ppo_cfg.get("goal_encoder_path", "") or "")
+        self.unified_encoder_path = str(ppo_cfg.get("unified_encoder_path", "") or "")
         self.graph_planning = self.subgoal_mode == "graph_planning"
         self.gp_cfg = dict(ppo_cfg.get("graph_planning", {}) or {})
+        self.use_unified = bool(self.unified_encoder_path) and not self.graph_planning
+        self.unified_encoder = None
         self.graph_planner = None
-
-        self.state_encoder = None
-        self.state_encoder_input_mode = None
-        if self.state_mode == "latent" and not self.graph_planning:
-            enc, _, _, ecfg = _load_encoder_bundle(self.latent_encoder_path, self.device, with_dynamics=False)
-            self.state_encoder = enc
-            self.state_encoder_input_mode = str(ecfg["input_mode"])
-
-        self.goal_encoder = None
-        self.goal_encoder_input_mode = None
-        needs_goal_encoder = any(c in ("latent_goal", "latent_subgoal") for c in self.goal_conditioning)
-        if needs_goal_encoder and not self.graph_planning:
-            path = self.goal_encoder_path or self.latent_encoder_path
-            enc, _, _, ecfg = _load_encoder_bundle(path, self.device, with_dynamics=False)
-            self.goal_encoder = enc
-            self.goal_encoder_input_mode = str(ecfg["input_mode"])
 
         self.planner = None
         if not self.graph_planning and (self.subgoal_mode == "motion_planning" or any(
@@ -103,6 +88,14 @@ class PPOEvaluator:
             subgoal_planner=self.planner, subgoal_radius=self.subgoal_radius,
         )
 
+        if self.use_unified:
+            self.unified_encoder, _uecfg, _ = load_encoder(
+                self.unified_encoder_path, self.device, eval_mode=True)
+            if not is_masked(_uecfg):
+                raise ValueError(
+                    f"unified_encoder_path must be a masked (dual-input) encoder; "
+                    f"'{self.unified_encoder_path}' is not masked")
+
         if self.graph_planning:
             self.graph_planner = LatentGraphPlanner(
                 self.gp_cfg, self.device, self.num_envs, self.state_mode)
@@ -110,10 +103,7 @@ class PPOEvaluator:
         self.builder = PolicyInputBuilder(
             state_mode=self.state_mode,
             goal_conditioning=self.goal_conditioning,
-            state_encoder=self.state_encoder,
-            state_encoder_input_mode=self.state_encoder_input_mode,
-            goal_encoder=self.goal_encoder,
-            goal_encoder_input_mode=self.goal_encoder_input_mode,
+            unified_encoder=self.unified_encoder,
             graph_planning=self.graph_planning,
             planning_latent_dim=(self.graph_planner.latent_dim
                                  if self.graph_planner is not None else None),
@@ -218,6 +208,7 @@ class PPOEvaluator:
                 term_np = terminated.detach().cpu().numpy().astype(bool)
                 trunc_np = truncated.detach().cpu().numpy().astype(bool)
                 dg_per_env = infos["desired_goal"].detach().cpu().numpy()
+                ep_goals = infos["episodic_goals_reached"].detach().cpu().numpy()
 
                 for i in np.where(done_mask)[0]:
                     if len(per_episode) >= self.num_episodes:
@@ -232,6 +223,7 @@ class PPOEvaluator:
                         "terminated": is_success,
                         "truncated": bool(trunc_np[i]),
                         "desired_goal": dg_per_env[i].tolist(),
+                        "goals_reached": int(ep_goals[i]),
                     })
 
                     if i == 0 and len(trajectories) < self.record_trajectory_episodes:
@@ -257,6 +249,7 @@ class PPOEvaluator:
         returns = np.array([e["return"] for e in per_episode], dtype=np.float32)
         lengths = np.array([e["length"] for e in per_episode], dtype=np.int64)
         successes = np.array([e["success"] for e in per_episode], dtype=bool)
+        goals = np.array([e["goals_reached"] for e in per_episode], dtype=np.float32)
         success_lengths = lengths[successes]
 
         summary = {
@@ -277,6 +270,10 @@ class PPOEvaluator:
             "length_max": int(lengths.max()),
             "success_rate": float(successes.mean()),
             "num_successes": int(successes.sum()),
+            "goals_reached_mean": float(goals.mean()),
+            "goals_reached_std": float(goals.std()),
+            "goals_reached_max": float(goals.max()),
+            "at_least_one_goal_rate": float((goals >= 1).mean()),
             "success_length_mean": float(success_lengths.mean()) if success_lengths.size else None,
             "success_length_min": int(success_lengths.min()) if success_lengths.size else None,
             "video_success": video_paths["success"],

@@ -18,17 +18,14 @@ ppo:
   goal_conditioning: ['latent_subgoal', 'latent_goal']
   subgoal_mode: graph_planning
 
-  # Latent graph planning, FORWARD-WM imagination. State/goal/subgoal latents come from the
-  # frozen dual-input masked encoder. When current & goal nodes are disconnected, the current
-  # policy is rolled out through the forward dynamics ensemble to imagine intermediate subgoals.
   graph_planning:
     encoder_ckpt: runs_encoder/dual_input_masked_recon/encoder_best.pt
     graph_npz: checkpoints/graph/graph_K500_recon.npz
     forward_wm_ckpt: runs_world_model/dynamics_dualinput/world_model_best.pt
-    inverse_wm_ckpt: runs_inverse_world_model/inverse/inverse_world_model_best.pt
+    inverse_wm_ckpt: runs_inverse_world_model/inverse_predict_k/inverse_world_model_best.pt
     K: 500
-    disjoint_components: 5      # force the graph into >= k disjoint components to exercise imagination (null = leave graph intact)
-    imagination: forward
+    disjoint_components: 5
+    imagination: inverse
     subgoal_threshold: 0.25
     forward_goal_threshold: 0.20
     forward_horizon: 50

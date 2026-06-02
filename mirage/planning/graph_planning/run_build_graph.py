@@ -39,8 +39,9 @@ SEED = 0
 N_PAIRS = 2000
 
 
-def main(encoder_ckpt: str | None = None):
-    os.makedirs(GRAPH_DIR, exist_ok=True)
+def main(encoder_ckpt: str | None = None, out: str | None = None):
+    out_path = out or os.path.join(GRAPH_DIR, "graph_K500.npz")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     t0 = time.time()
     kw = {"encoder_path": encoder_ckpt} if encoder_ckpt else {}
     data, encoder, _ = load_data_and_encoder(**kw)
@@ -80,14 +81,14 @@ def main(encoder_ckpt: str | None = None):
 
         if K == 500:
             np.savez_compressed(
-                os.path.join(GRAPH_DIR, "graph_K500.npz"),
+                out_path,
                 nodes=g.nodes, edges=g.edges, edge_counts=g.edge_counts,
                 centroids=g.centroids, cluster_labels_t=c_t.astype(np.int32),
                 cluster_labels_tp1=c_tp1.astype(np.int32),
                 start_clusters=start_c.astype(np.int32),
                 goal_clusters=goal_c.astype(np.int32),
             )
-            print(f"  saved {GRAPH_DIR}/graph_K500.npz")
+            print(f"  saved {out_path}")
 
     best_K = max(KS, key=lambda k: results["per_K"][str(k)]["coverage"]["frac_connected"])
     results["best_K"] = best_K
@@ -106,5 +107,7 @@ if __name__ == "__main__":
     ap.add_argument("--encoder-ckpt", default=None,
                     help="dual-input masked encoder checkpoint (must match the world models / "
                          "planner config). Defaults to runs_encoder/dual_input_masked/encoder_best.pt")
+    ap.add_argument("--out", default=None,
+                    help="output .npz path (default checkpoints/graph/graph_K500.npz)")
     args = ap.parse_args()
-    main(encoder_ckpt=args.encoder_ckpt)
+    main(encoder_ckpt=args.encoder_ckpt, out=args.out)

@@ -4,7 +4,7 @@ cosine_decay_to: 3.0e-05
 dataset_id: D4RL/antmaze/umaze-v1
 datasets_path: data/minari
 device: cuda
-encoder_ckpt: runs_encoder/dual_input_masked/encoder_best.pt
+encoder_ckpt: runs_encoder/dual_input_masked_recon/encoder_best.pt
 eval_batch_size: 256
 eval_batches: 8
 eval_every: 5000
@@ -31,7 +31,7 @@ run_name: dynamics_dualinput
 seed: 0
 total_steps: 200000
 val_frac: 0.05
-wandb: false
+wandb: true
 wandb_entity: samratsahoo-stanford-university
 wandb_project: MIRAGE
 weight_decay: 1.0e-05

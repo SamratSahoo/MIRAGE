@@ -87,6 +87,8 @@ def main():
           f"[{summary['length_min']}, {summary['length_max']}]")
     print(f"[eval] success rate    : {summary['success_rate']:.1%}  "
           f"({summary['num_successes']}/{summary['num_episodes']})")
+    print(f"[eval] goals reached   : {summary['goals_reached_mean']:.2f}  "
+          f">=1: {summary['at_least_one_goal_rate']:.1%}  (max {summary['goals_reached_max']:.0f})")
     print(f"[eval] output_dir      : {evaluator.output_dir}")
     print("=" * 66)
 

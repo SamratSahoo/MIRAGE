@@ -22,24 +22,6 @@ def build_mlp(in_dim: int, hidden_dim: int, n_hidden: int, out_dim: int,
     return nn.Sequential(*layers)
 
 
-class StateEncoder(nn.Module):
-    def __init__(self, in_dim: int, latent_dim: int = 16,
-                 hidden_dim: int = 512, n_hidden: int = 3,
-                 l2_normalize: bool = True, cold_init_eps: float = 1e-12):
-        super().__init__()
-        self.in_dim = in_dim
-        self.net = build_mlp(in_dim, hidden_dim, n_hidden, latent_dim,
-                             cold_init_eps=cold_init_eps)
-        self.l2_normalize = l2_normalize
-        self.latent_dim = latent_dim
-
-    def forward(self, s: torch.Tensor) -> torch.Tensor:
-        z = self.net(s)
-        if self.l2_normalize:
-            z = F.normalize(z, dim=-1, eps=1e-8)
-        return z
-
-
 class MaskedStateEncoder(nn.Module):
     def __init__(self, latent_dim: int = 16,
                  hidden_dim: int = 512, n_hidden: int = 3,
@@ -100,3 +82,12 @@ class InverseDynamics(nn.Module):
 
     def forward(self, z: torch.Tensor, z_next: torch.Tensor) -> torch.Tensor:
         return self.net(torch.cat([z, z_next], dim=-1))
+
+
+class StateDecoder(nn.Module):
+    def __init__(self, latent_dim: int, out_dim: int, hidden_dim: int = 512, n_hidden: int = 2):
+        super().__init__()
+        self.net = build_mlp(latent_dim, hidden_dim, n_hidden, out_dim)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(z)

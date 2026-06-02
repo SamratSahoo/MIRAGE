@@ -28,3 +28,15 @@ def forward_dyn_loss(z_next_pred: torch.Tensor, z_next_target: torch.Tensor) -> 
 def inverse_dyn_loss(a_pred: torch.Tensor, a_target: torch.Tensor) -> tuple[torch.Tensor, dict]:
     loss = F.mse_loss(a_pred, a_target)
     return loss, {"inverse_dyn/mse": loss.item()}
+
+
+def recon_loss(s_pred: torch.Tensor, s_target: torch.Tensor) -> tuple[torch.Tensor, dict]:
+    loss = F.mse_loss(s_pred, s_target)
+    return loss, {"recon/mse": loss.item()}
+
+
+def align_loss(z_full: torch.Tensor, z_goal: torch.Tensor) -> tuple[torch.Tensor, dict]:
+    loss = F.mse_loss(z_full, z_goal)
+    with torch.no_grad():
+        cos = (z_full * z_goal).sum(-1).mean().item()
+    return loss, {"align/mse": loss.item(), "align/cos": cos}

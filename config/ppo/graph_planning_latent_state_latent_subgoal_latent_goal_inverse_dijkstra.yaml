@@ -18,17 +18,13 @@ ppo:
   goal_conditioning: ['latent_subgoal', 'latent_goal']
   subgoal_mode: graph_planning
 
-  # Latent graph planning, INVERSE-WM imagination. When current & goal nodes are disconnected,
-  # the inverse world model predicts a short action+latent sequence between them, whose
-  # intermediate latents are used as subgoals.
-  # NOTE: requires a trained inverse world model at inverse_wm_ckpt before launching.
   graph_planning:
-    encoder_ckpt: runs_encoder/dual_input_masked/encoder_best.pt
-    graph_npz: checkpoints/graph/graph_K500.npz
-    forward_wm_ckpt: checkpoints/forward_world_model/dynamics_dualinput_best.pt
-    inverse_wm_ckpt: checkpoints/inverse_world_model/inverse_best.pt
+    encoder_ckpt: runs_encoder/dual_input_masked_recon/encoder_best.pt
+    graph_npz: checkpoints/graph/graph_K500_recon.npz
+    forward_wm_ckpt: runs_world_model/dynamics_dualinput/world_model_best.pt
+    inverse_wm_ckpt: runs_inverse_world_model/inverse_dijkstra/inverse_world_model_best.pt
     K: 500
-    disjoint_components: 5      # force the graph into >= k disjoint components to exercise imagination (null = leave graph intact)
+    disjoint_components: 5
     imagination: inverse
     subgoal_threshold: 0.25
     forward_goal_threshold: 0.20

@@ -292,7 +292,11 @@ class LatentGraphPlanner:
         if self.iwm.predict_k:
             out = self.iwm(z0, zk)
             lat = F.normalize(self.iwm.reconstruct_latents(z0, out["deltas"]), dim=-1)
-            inter_list = [lat[i, :max(K - 1, 0)] for i in range(m)]
+            k_pred = out.get("k_pred")
+            inter_list = []
+            for i in range(m):
+                ki = K if k_pred is None else max(1, min(int(round(float(k_pred[i]) * K)), K))
+                inter_list.append(lat[i, :max(ki - 1, 0)])
             return self._pad_sequences(inter_list, zk)
 
         cand = []

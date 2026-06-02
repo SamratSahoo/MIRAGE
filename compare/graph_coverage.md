@@ -5,7 +5,7 @@ masked encoder, then measure what fraction of realistic (start, goal) pairs can 
 connected by shortest-path search on the directed transition graph. This decides
 whether we need world-model graph augmentation.
 
-**Encoder:** `/scratch/users/asattira/mirage/runs_encoder/dual_input_masked/encoder_best.pt`
+**Encoder:** `mirage/runs_encoder/dual_input_masked/encoder_best.pt`
 (`MaskedStateEncoder`, 16-D L2-normalized latents).
 **Dataset:** `D4RL/antmaze/umaze-v1` — 1430 episodes, 1,001,430 states, 1,000,000 transitions.
 **Compute:** CPU only (no GPU needed). Full 1M-state encode in ~26s; whole sweep ~90s.
@@ -80,7 +80,7 @@ augmentation question should be re-evaluated per-environment when we move beyond
 ## Artifacts
 
 - `compare/phase1_results.json` — full stats + coverage per K (machine-readable).
-- `/scratch/users/asattira/mirage/graph/graph_K500.npz` — K=500 graph: `nodes`, `edges`,
+- `mirage/graph/graph_K500.npz` — K=500 graph: `nodes`, `edges`,
   `edge_counts`, `centroids`, per-transition `cluster_labels_t`/`cluster_labels_tp1`, and the
   sampled `start_clusters`/`goal_clusters`.
 - Code: `mirage/planning/graph_planning/latent_graph.py`, `mirage/planning/graph_planning/coverage.py`,

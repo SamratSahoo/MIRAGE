@@ -15,25 +15,10 @@ ppo:
   load_default_checkpoint: true
 
   state_mode: latent
-  latent_encoder_path: "runs_encoder/state_encoder/encoder_best.pt"
-  goal_encoder_path: "runs_encoder/goal_encoder/encoder_best.pt"
+  unified_encoder_path: runs_encoder/dual_input_masked_recon/encoder_best.pt
   goal_conditioning: ['latent_goal']
   subgoal_mode: ""
   subgoal_radius: 1.5
-
-  encoder_train:
-    enabled: true
-    steps_per_iter: 4
-    batch_size: 4096
-    contrastive_window: 8
-    nce_weight: 1.0
-    fwd_weight: 0.1
-    inv_weight: 1.0
-    nce_temperature: 0.1
-    lr: 3.0e-4
-
-  goal_encoder_train:
-    enabled: true
 
   num_envs: 16384
   num_steps: 16
