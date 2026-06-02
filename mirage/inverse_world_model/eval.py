@@ -17,10 +17,14 @@ def full_eval(encoder, model, sampler, device, latent_dim: int,
 
     for _ in range(n_batches):
         b = sampler.batch(batch_size)
-        states = b["states"]
-        B = states.shape[0]
-        flat = states.reshape(-1, states.shape[-1])
-        z_seq = encoder.encode_full(flat).view(B, K + 1, latent_dim)
+        if "latents" in b:
+            z_seq = b["latents"]
+            B = z_seq.shape[0]
+        else:
+            states = b["states"]
+            B = states.shape[0]
+            flat = states.reshape(-1, states.shape[-1])
+            z_seq = encoder.encode_full(flat).view(B, K + 1, latent_dim)
         z0 = z_seq[:, 0]
         k = b["k"]
         zk = z_seq[torch.arange(B, device=device), k]
@@ -46,10 +50,14 @@ def full_eval(encoder, model, sampler, device, latent_dim: int,
 
     for kb in per_k_act:
         bk = sampler.batch(batch_size, fixed_k=kb)
-        states = bk["states"]
-        B = states.shape[0]
-        flat = states.reshape(-1, states.shape[-1])
-        z_seq = encoder.encode_full(flat).view(B, K + 1, latent_dim)
+        if "latents" in bk:
+            z_seq = bk["latents"]
+            B = z_seq.shape[0]
+        else:
+            states = bk["states"]
+            B = states.shape[0]
+            flat = states.reshape(-1, states.shape[-1])
+            z_seq = encoder.encode_full(flat).view(B, K + 1, latent_dim)
         z0 = z_seq[:, 0]
         kvec = bk["k"]
         zk = z_seq[torch.arange(B, device=device), kvec]
