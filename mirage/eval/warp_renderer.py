@@ -6,7 +6,7 @@ from sys import platform
 import gymnasium as gym
 import numpy as np
 
-from mirage.envs.env_config import ENV_CONFIG  # noqa: F401
+from mirage.envs.env_config import ENV_CONFIG
 
 
 class WarpRenderer:

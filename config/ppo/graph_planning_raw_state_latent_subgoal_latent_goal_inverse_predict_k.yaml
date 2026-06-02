@@ -1,0 +1,63 @@
+env:
+  env_type: antmaze
+  env_id: AntMaze_UMaze-v5
+  reward_type: sparse
+  continuing_task: true
+  reset_target: false
+  max_episode_steps: 1000
+  goal_size: 2
+  capture_video: false
+  video_every: 1000
+  use_cuda_graph: false
+
+ppo:
+  seed: 1
+  load_default_checkpoint: true
+
+  state_mode: raw
+  goal_conditioning: ['latent_subgoal', 'latent_goal']
+  subgoal_mode: graph_planning
+
+  graph_planning:
+    encoder_ckpt: runs_encoder/dual_input_masked_recon/encoder_best.pt
+    graph_npz: checkpoints/graph/graph_K500_recon.npz
+    forward_wm_ckpt: runs_world_model/dynamics_dualinput/world_model_best.pt
+    inverse_wm_ckpt: runs_inverse_world_model/inverse_predict_k/inverse_world_model_best.pt
+    K: 500
+    disjoint_components: 5
+    imagination: inverse
+    subgoal_threshold: 0.25
+    forward_goal_threshold: 0.20
+    forward_horizon: 50
+    forward_stride: 2
+    inverse_k_sweep: [3, 5, 8]
+    lookahead: 1
+    max_subgoals: 16
+
+  num_envs: 16384
+  num_steps: 16
+  num_minibatches: 32
+  update_epochs: 10
+  learning_rate: 0.0003
+  anneal_lr: true
+  gamma: 0.99
+  gae_lambda: 0.95
+  norm_adv: true
+  clip_coef: 0.2
+  clip_vloss: true
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: null
+
+wandb:
+  track: true
+  project: MIRAGE
+  entity: null
+
+train:
+  total_timesteps: 100000000
+  save_model: true
+  save_freq: 5000000
+  eval_freq: 2000000
+  eval_episodes: 256

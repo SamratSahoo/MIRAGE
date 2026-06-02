@@ -232,3 +232,11 @@ videos/
 sbatch/*.out
 sbatch/*.err
 wandb_run_id.txt
+
+runs_inverse_world_model/**
+runs_world_model/**
+
+# shared checkpoints (committed for cross-cluster access)
+!checkpoints/
+!checkpoints/**/*.pt
+!checkpoints/**/*.yaml

@@ -84,6 +84,8 @@ def load_antmaze(dataset_id: str = "D4RL/antmaze/umaze-v1",
                  datasets_path: str | None = None,
                  max_episodes: int | None = None) -> AntmazeData:
     if datasets_path is not None:
+        from mirage.paths import resolve_path
+        datasets_path = resolve_path(datasets_path)
         os.environ["MINARI_DATASETS_PATH"] = datasets_path
         os.makedirs(datasets_path, exist_ok=True)
     import minari

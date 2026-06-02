@@ -1,19 +1,21 @@
 dataset_id: D4RL/antmaze/umaze-v1
-datasets_path: /iliad2/u/samrat/MIRAGE/data/minari
+datasets_path: data/minari
 
 input_mode: full
-log_root: /iliad2/u/samrat/MIRAGE/runs_encoder
+log_root: runs_encoder
 
 load_default_checkpoint: true
 
+mask_prob: 0.3
+
 latent_dim: 16
-hidden_dim: 128
-n_hidden: 2
+hidden_dim: 512
+n_hidden: 3
 cold_init_eps: 1.0e-12
 l2_normalize: true
 
-dyn_hidden_dim: 64
-dyn_n_hidden: 1
+dyn_hidden_dim: 256
+dyn_n_hidden: 2
 
 nce_weight: 1.0
 inv_weight: 1.0
@@ -22,14 +24,14 @@ nce_temperature: 0.1
 contrastive_window: 32
 
 batch_size: 1024
-total_steps: 200000
+total_steps: 50000
 lr: 3.0e-4
 weight_decay: 0.0
 grad_clip: 10.0
 
 log_every: 200
-eval_every: 5000
-ckpt_every: 10000
+eval_every: 2500
+ckpt_every: 5000
 eval_batches: 16
 eval_batch_size: 1024
 
@@ -40,4 +42,4 @@ device: cuda
 
 wandb: true
 wandb_project: MIRAGE
-wandb_entity: null
+wandb_entity: samratsahoo-stanford-university

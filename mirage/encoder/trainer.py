@@ -10,13 +10,14 @@ import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 
+from mirage.paths import resolve_path
 from mirage.utils.checkpoint import Checkpointer
 from mirage.utils.wandb_session import WandbSession
 
 from .data import Sampler, load_antmaze
 from .eval import full_eval
-from .losses import forward_dyn_loss, info_nce, inverse_dyn_loss
-from .models import ForwardDynamics, InverseDynamics, StateEncoder
+from .losses import align_loss, forward_dyn_loss, info_nce, inverse_dyn_loss, recon_loss
+from .models import ForwardDynamics, InverseDynamics, MaskedStateEncoder, StateDecoder
 
 
 class EncoderTrainer:
@@ -28,12 +29,12 @@ class EncoderTrainer:
         if self.device.type == "cuda":
             torch.cuda.manual_seed_all(cfg["seed"])
 
-        self.run_dir = Path(cfg["log_root"]) / cfg["run_name"]
+        self.run_dir = Path(resolve_path(cfg["log_root"])) / cfg["run_name"]
         self.run_dir.mkdir(parents=True, exist_ok=True)
         with open(self.run_dir / "config.yaml", "w") as f:
             yaml.safe_dump(cfg, f)
 
-        self.writer = SummaryWriter(log_dir=str(self.run_dir / "tb"))
+        self.writer = None
         self.checkpointer = Checkpointer(str(self.run_dir), exp_name="encoder", suffix=".pt")
         self.session = WandbSession(
             run_dir=str(self.run_dir),
@@ -57,24 +58,37 @@ class EncoderTrainer:
         val_sampler = Sampler(val_data, cfg["input_mode"], cfg["contrastive_window"],
                               seed=cfg["seed"] + 1, device=self.device)
 
-        encoder = StateEncoder(in_dim=state_dim,
-                               latent_dim=cfg["latent_dim"],
-                               hidden_dim=cfg["hidden_dim"],
-                               n_hidden=cfg["n_hidden"],
-                               l2_normalize=cfg["l2_normalize"],
-                               cold_init_eps=cfg["cold_init_eps"]).to(self.device)
+        mask_prob = float(cfg.get("mask_prob", 0.0))
+        encoder = MaskedStateEncoder(
+            latent_dim=cfg["latent_dim"],
+            hidden_dim=cfg["hidden_dim"],
+            n_hidden=cfg["n_hidden"],
+            l2_normalize=cfg["l2_normalize"],
+            cold_init_eps=cfg["cold_init_eps"],
+        ).to(self.device)
+        self._mask_prob = mask_prob
         fwd = ForwardDynamics(latent_dim=cfg["latent_dim"], act_dim=act_dim,
                               hidden_dim=cfg["dyn_hidden_dim"], n_hidden=cfg["dyn_n_hidden"]).to(self.device)
         inv = InverseDynamics(latent_dim=cfg["latent_dim"], act_dim=act_dim,
                               hidden_dim=cfg["dyn_hidden_dim"], n_hidden=cfg["dyn_n_hidden"]).to(self.device)
-        opt = torch.optim.Adam(
-            list(encoder.parameters()) + list(fwd.parameters()) + list(inv.parameters()),
-            lr=cfg["lr"], weight_decay=cfg["weight_decay"],
-        )
+
+        params = list(encoder.parameters()) + list(fwd.parameters()) + list(inv.parameters())
+        self.recon_weight = float(cfg.get("recon_weight", 0.0))
+        self.align_weight = float(cfg.get("align_weight", 0.0))
+        self.decoder = None
+        if self.recon_weight > 0:
+            all_states = train_data.gather_state(cfg["input_mode"], np.arange(train_data.obs.shape[0]))
+            self.state_mean = torch.from_numpy(all_states.mean(0).astype(np.float32)).to(self.device)
+            self.state_std = torch.from_numpy((all_states.std(0) + 1e-6).astype(np.float32)).to(self.device)
+            self.decoder = StateDecoder(latent_dim=cfg["latent_dim"], out_dim=state_dim,
+                                        hidden_dim=int(cfg.get("recon_hidden_dim", cfg["hidden_dim"])),
+                                        n_hidden=int(cfg.get("recon_n_hidden", 2))).to(self.device)
+            params += list(self.decoder.parameters())
+        opt = torch.optim.Adam(params, lr=cfg["lr"], weight_decay=cfg["weight_decay"])
         return train_data, val_data, train_sampler, val_sampler, encoder, fwd, inv, opt
 
     def _save_ckpt(self, path: str, step: int, encoder, fwd, inv, opt, best_val, val_metrics):
-        self.checkpointer.save({
+        ckpt = {
             "step": int(step),
             "encoder": encoder.state_dict(),
             "fwd": fwd.state_dict(),
@@ -88,7 +102,12 @@ class EncoderTrainer:
                 "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
                 "numpy": np.random.get_state(),
             },
-        }, path)
+        }
+        if self.decoder is not None:
+            ckpt["decoder"] = self.decoder.state_dict()
+            ckpt["state_mean"] = self.state_mean.cpu()
+            ckpt["state_std"] = self.state_std.cpu()
+        self.checkpointer.save(ckpt, path)
 
     def train(self):
         cfg = self.cfg
@@ -105,6 +124,8 @@ class EncoderTrainer:
                 fwd.load_state_dict(state["fwd"])
                 inv.load_state_dict(state["inv"])
                 opt.load_state_dict(state["optimizer"])
+                if self.decoder is not None and "decoder" in state:
+                    self.decoder.load_state_dict(state["decoder"])
                 start_step = int(state["step"]) + 1
                 best_val = float(state.get("best_val", float("inf")))
                 if "rng" in state:
@@ -119,6 +140,7 @@ class EncoderTrainer:
                 print("[encoder] no checkpoint found; training from scratch")
 
         self.session.init()
+        self.writer = SummaryWriter(log_dir=str(self.run_dir / "tb"))
         n_params = sum(p.numel() for p in list(encoder.parameters()) + list(fwd.parameters()) + list(inv.parameters()))
         print(f"[encoder] device={self.device}  run_dir={self.run_dir}  params={n_params/1e6:.2f}M")
         print(f"[encoder] input_mode={cfg['input_mode']}  state_dim={train_data.state_dim(cfg['input_mode'])}")
@@ -128,8 +150,14 @@ class EncoderTrainer:
         total_steps = int(cfg["total_steps"])
         for step in range(start_step, total_steps + 1):
             encoder.train(); fwd.train(); inv.train()
+            if self.decoder is not None:
+                self.decoder.train()
             pb = train_sampler.pair_batch(cfg["batch_size"])
-            z1 = encoder(pb["s1"]); z2 = encoder(pb["s2"])
+            if self._mask_prob > 0:
+                z1 = encoder(pb["s1"], mask_prob=self._mask_prob)
+                z2 = encoder(pb["s2"], mask_prob=self._mask_prob)
+            else:
+                z1 = encoder(pb["s1"]); z2 = encoder(pb["s2"])
             nce_loss, nce_log = info_nce(z1, z2, temperature=cfg["nce_temperature"])
 
             ib = train_sampler.iid_batch(cfg["batch_size"])
@@ -140,32 +168,49 @@ class EncoderTrainer:
             fwd_loss, fwd_log = forward_dyn_loss(z_n_pred, z_n.detach())
             inv_loss, inv_log = inverse_dyn_loss(a_pred, ib["a"])
 
+            recon_l = torch.zeros((), device=self.device)
+            recon_log = {}
+            if self.decoder is not None:
+                s_tgt = (ib["s"] - self.state_mean) / self.state_std
+                recon_l, recon_log = recon_loss(self.decoder(z), s_tgt)
+
+            align_l = torch.zeros((), device=self.device)
+            align_log = {}
+            if self._mask_prob > 0 and self.align_weight > 0:
+                zg = encoder.encode_goal(ib["s"])
+                align_l, align_log = align_loss(z, zg)
+
             loss = (cfg["nce_weight"] * nce_loss
                     + cfg["fwd_weight"] * fwd_loss
-                    + cfg["inv_weight"] * inv_loss)
+                    + cfg["inv_weight"] * inv_loss
+                    + self.recon_weight * recon_l
+                    + self.align_weight * align_l)
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
             if cfg["grad_clip"] > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    list(encoder.parameters()) + list(fwd.parameters()) + list(inv.parameters()),
-                    cfg["grad_clip"],
-                )
+                clip_params = list(encoder.parameters()) + list(fwd.parameters()) + list(inv.parameters())
+                if self.decoder is not None:
+                    clip_params = clip_params + list(self.decoder.parameters())
+                torch.nn.utils.clip_grad_norm_(clip_params, cfg["grad_clip"])
             opt.step()
 
             if step % cfg["log_every"] == 0 or step == 1:
                 now = time.time()
                 sps = cfg["log_every"] / max(now - last_log_t, 1e-9)
                 last_log_t = now
-                log = {**nce_log, **fwd_log, **inv_log,
+                log = {**nce_log, **fwd_log, **inv_log, **recon_log, **align_log,
                        "train/total_loss": loss.item(),
                        "train/steps_per_sec": sps}
                 for k, v in log.items():
                     self.writer.add_scalar(k, v, step)
+                self.session.log(log, step=step)
                 print(f"[step {step:>7d}] loss={loss.item():.4f}  "
                       f"nce={nce_log['info_nce/loss']:.4f}  "
                       f"fwd={fwd_log['forward_dyn/mse']:.5f}  "
                       f"inv={inv_log['inverse_dyn/mse']:.5f}  "
+                      f"recon={recon_log.get('recon/mse', 0.0):.4f}  "
+                      f"align={align_log.get('align/mse', 0.0):.4f}  "
                       f"top1={nce_log['info_nce/top1_acc']:.3f}  "
                       f"sps={sps:.0f}")
 
@@ -177,6 +222,7 @@ class EncoderTrainer:
                                temperature=cfg["nce_temperature"])
                 for k, v in vm.items():
                     self.writer.add_scalar(k, v, step)
+                self.session.log(vm, step=step)
                 val_metric = vm["val/info_nce_loss"]
                 print(f"[eval  {step:>7d}] " + "  ".join(f"{k.split('/',1)[1]}={v:.4f}" for k, v in vm.items()))
                 if val_metric < best_val:

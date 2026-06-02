@@ -11,10 +11,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
-from mirage.encoder.models import ForwardDynamics, InverseDynamics, StateEncoder
-from mirage.encoder.online import OnlineEncoderUpdater
+from mirage.encoder.load import is_masked, load_encoder
 from mirage.envs.warp_antmaze import WarpAntMazeEnv
-from mirage.planning.motion_planner import CellGraphPlanner
+from mirage.paths import resolve_path
+from mirage.planning.motion_planning.cell_graph_planner import CellGraphPlanner
+from mirage.planning.graph_planning.latent_graph_planner import LatentGraphPlanner
 from mirage.utils.checkpoint import Checkpointer
 from mirage.utils.wandb_session import WandbSession
 
@@ -23,32 +24,6 @@ from .policy_input import PolicyInputBuilder
 
 
 os.environ.setdefault("MUJOCO_GL", "glfw" if platform == "darwin" else "osmesa")
-
-
-def _load_encoder_bundle(path: str, device: torch.device, with_dynamics: bool = True):
-    state = torch.load(path, map_location=device, weights_only=False)
-    cfg = state["config"]
-    encoder = StateEncoder(
-        in_dim=int(state["encoder"]["net.0.weight"].shape[1]),
-        latent_dim=int(cfg["latent_dim"]),
-        hidden_dim=int(cfg["hidden_dim"]),
-        n_hidden=int(cfg["n_hidden"]),
-        l2_normalize=bool(cfg["l2_normalize"]),
-        cold_init_eps=float(cfg["cold_init_eps"]),
-    ).to(device)
-    encoder.load_state_dict(state["encoder"])
-    fwd = inv = None
-    if with_dynamics and "fwd" in state and "inv" in state:
-        act_dim = int(state["fwd"]["net.0.weight"].shape[1]) - int(cfg["latent_dim"])
-        fwd = ForwardDynamics(latent_dim=int(cfg["latent_dim"]), act_dim=act_dim,
-                              hidden_dim=int(cfg["dyn_hidden_dim"]),
-                              n_hidden=int(cfg["dyn_n_hidden"])).to(device)
-        inv = InverseDynamics(latent_dim=int(cfg["latent_dim"]), act_dim=act_dim,
-                              hidden_dim=int(cfg["dyn_hidden_dim"]),
-                              n_hidden=int(cfg["dyn_n_hidden"])).to(device)
-        fwd.load_state_dict(state["fwd"])
-        inv.load_state_dict(state["inv"])
-    return encoder, fwd, inv, cfg
 
 
 class PPOTrainer:
@@ -82,20 +57,16 @@ class PPOTrainer:
         self.load_default_checkpoint = bool(ppo_cfg.get("load_default_checkpoint", True))
 
         self.state_mode = str(ppo_cfg.get("state_mode", "raw"))
-        self.latent_encoder_path = str(ppo_cfg.get("latent_encoder_path", "") or "")
-        self.goal_encoder_path = str(ppo_cfg.get("goal_encoder_path", "") or "")
+        self.unified_encoder_path = str(ppo_cfg.get("unified_encoder_path", "") or "")
         self.goal_conditioning = list(ppo_cfg.get("goal_conditioning", ["goal"]))
         self.subgoal_mode = str(ppo_cfg.get("subgoal_mode", "") or "")
         self.subgoal_radius = float(ppo_cfg.get("subgoal_radius", 1.5))
 
-        self.encoder_train_cfg = dict(ppo_cfg.get("encoder_train", {}) or {})
-        self.goal_encoder_train_cfg = dict(ppo_cfg.get("goal_encoder_train", {}) or {})
-
         self.run_name = self.exp_name
-        self.run_dir = os.path.join("runs", self.run_name)
+        self.run_dir = resolve_path(os.path.join("runs", self.run_name))
         os.makedirs(self.run_dir, exist_ok=True)
         self.checkpointer = Checkpointer(self.run_dir, self.exp_name)
-        self.writer = SummaryWriter(self.run_dir)
+        self.writer = None
 
         random.seed(self.seed)
         np.random.seed(self.seed)
@@ -103,15 +74,21 @@ class PPOTrainer:
         torch.backends.cudnn.deterministic = True
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        needs_planner = self.subgoal_mode == "motion_planning" or any(
-            c in ("subgoal", "latent_subgoal") for c in self.goal_conditioning
-        )
+        self.graph_planning = self.subgoal_mode == "graph_planning"
+        self.gp_cfg = dict(ppo_cfg.get("graph_planning", {}) or {})
+        self.use_unified = bool(self.unified_encoder_path) and not self.graph_planning
+        self.unified_encoder = None
         self.planner = None
-        if needs_planner:
-            if self.subgoal_mode != "motion_planning":
-                raise ValueError(f"unsupported subgoal_mode {self.subgoal_mode!r}")
-            self.planner = CellGraphPlanner(self.env_id, device=self.device,
-                                            subgoal_radius=self.subgoal_radius)
+        self.graph_planner = None
+        if not self.graph_planning:
+            needs_planner = self.subgoal_mode == "motion_planning" or any(
+                c in ("subgoal", "latent_subgoal") for c in self.goal_conditioning
+            )
+            if needs_planner:
+                if self.subgoal_mode != "motion_planning":
+                    raise ValueError(f"unsupported subgoal_mode {self.subgoal_mode!r}")
+                self.planner = CellGraphPlanner(self.env_id, device=self.device,
+                                                subgoal_radius=self.subgoal_radius)
 
         self.envs = WarpAntMazeEnv(
             env_id=self.env_id,
@@ -122,41 +99,25 @@ class PPOTrainer:
             subgoal_radius=self.subgoal_radius,
         )
 
-        self.state_encoder = None
-        self.state_encoder_input_mode = None
-        self.state_fwd = None
-        self.state_inv = None
-        if self.state_mode == "latent":
-            if not self.latent_encoder_path:
-                raise ValueError("state_mode='latent' requires latent_encoder_path")
-            enc, fwd, inv, ecfg = _load_encoder_bundle(self.latent_encoder_path, self.device)
-            self.state_encoder = enc
-            self.state_encoder_input_mode = str(ecfg["input_mode"])
-            self.state_fwd = fwd
-            self.state_inv = inv
+        if self.use_unified:
+            self.unified_encoder, _uecfg, _ = load_encoder(
+                self.unified_encoder_path, self.device, eval_mode=True)
+            if not is_masked(_uecfg):
+                raise ValueError(
+                    f"unified_encoder_path must be a masked (dual-input) encoder; "
+                    f"'{self.unified_encoder_path}' is not masked")
 
-        self.goal_encoder = None
-        self.goal_encoder_input_mode = None
-        self.goal_fwd = None
-        self.goal_inv = None
-        needs_goal_encoder = any(c in ("latent_goal", "latent_subgoal") for c in self.goal_conditioning)
-        if needs_goal_encoder:
-            path = self.goal_encoder_path or self.latent_encoder_path
-            if not path:
-                raise ValueError("latent_goal/latent_subgoal requires goal_encoder_path")
-            enc, fwd, inv, ecfg = _load_encoder_bundle(path, self.device)
-            self.goal_encoder = enc
-            self.goal_encoder_input_mode = str(ecfg["input_mode"])
-            self.goal_fwd = fwd
-            self.goal_inv = inv
+        if self.graph_planning:
+            self.graph_planner = LatentGraphPlanner(
+                self.gp_cfg, self.device, self.num_envs, self.state_mode)
 
         self.builder = PolicyInputBuilder(
             state_mode=self.state_mode,
             goal_conditioning=self.goal_conditioning,
-            state_encoder=self.state_encoder,
-            state_encoder_input_mode=self.state_encoder_input_mode,
-            goal_encoder=self.goal_encoder,
-            goal_encoder_input_mode=self.goal_encoder_input_mode,
+            unified_encoder=self.unified_encoder,
+            graph_planning=self.graph_planning,
+            planning_latent_dim=(self.graph_planner.latent_dim
+                                 if self.graph_planner is not None else None),
         )
         self.obs_dim = self.builder.obs_dim
         self.act_dim = int(np.prod(self.envs.single_action_space.shape))
@@ -164,39 +125,11 @@ class PPOTrainer:
         self.agent = Agent(obs_dim=self.obs_dim, act_dim=self.act_dim).to(self.device)
         self.optimizer = optim.Adam(self.agent.parameters(), lr=self.learning_rate, eps=1e-5)
 
-        self.online_state = None
-        if (self.state_encoder is not None and self.encoder_train_cfg.get("enabled", False)
-                and self.state_fwd is not None and self.state_inv is not None):
-            ec = self.encoder_train_cfg
-            self.online_state = OnlineEncoderUpdater(
-                encoder=self.state_encoder, fwd=self.state_fwd, inv=self.state_inv,
-                input_mode=self.state_encoder_input_mode,
-                lr=float(ec.get("lr", 3e-4)),
-                nce_weight=float(ec.get("nce_weight", 1.0)),
-                fwd_weight=float(ec.get("fwd_weight", 0.1)),
-                inv_weight=float(ec.get("inv_weight", 1.0)),
-                nce_temperature=float(ec.get("nce_temperature", 0.1)),
-                contrastive_window=int(ec.get("contrastive_window", 8)),
-                steps_per_iter=int(ec.get("steps_per_iter", 4)),
-                batch_size=int(ec.get("batch_size", 4096)),
-            )
-
-        self.online_goal = None
-        if (self.goal_encoder is not None and self.goal_encoder_train_cfg.get("enabled", False)
-                and self.goal_fwd is not None and self.goal_inv is not None):
-            ec = {**self.encoder_train_cfg, **self.goal_encoder_train_cfg}
-            self.online_goal = OnlineEncoderUpdater(
-                encoder=self.goal_encoder, fwd=self.goal_fwd, inv=self.goal_inv,
-                input_mode="xy",
-                lr=float(ec.get("lr", 3e-4)),
-                nce_weight=float(ec.get("nce_weight", 1.0)),
-                fwd_weight=float(ec.get("fwd_weight", 0.1)),
-                inv_weight=float(ec.get("inv_weight", 1.0)),
-                nce_temperature=float(ec.get("nce_temperature", 0.1)),
-                contrastive_window=int(ec.get("contrastive_window", 8)),
-                steps_per_iter=int(ec.get("steps_per_iter", 4)),
-                batch_size=int(ec.get("batch_size", 4096)),
-            )
+        self._imagine_act_fn = (
+            (lambda z, zk, gxy: self.agent.actor_mean(
+                self.builder.assemble_from_latents(z, zk, zk, goal_xy=gxy)))
+            if self.graph_planning else None
+        )
 
         self.hyperparams = {
             **{f"env.{k}": v for k, v in env_cfg.items()},
@@ -250,14 +183,6 @@ class PPOTrainer:
             "rng": self._capture_rng(),
             "config": self.cfg,
         }
-        if self.online_state is not None:
-            state["online_state"] = self.online_state.state_dict()
-        elif self.state_encoder is not None:
-            state["state_encoder"] = self.state_encoder.state_dict()
-        if self.online_goal is not None:
-            state["online_goal"] = self.online_goal.state_dict()
-        elif self.goal_encoder is not None:
-            state["goal_encoder"] = self.goal_encoder.state_dict()
         return state
 
     def _load_checkpoint(self, state: dict) -> None:
@@ -270,14 +195,6 @@ class PPOTrainer:
         self._last_eval_step = int(state.get("last_eval_step", self._global_step))
         if "rng" in state:
             self._restore_rng(state["rng"])
-        if "online_state" in state and self.online_state is not None:
-            self.online_state.load_state_dict(state["online_state"])
-        elif "state_encoder" in state and self.state_encoder is not None:
-            self.state_encoder.load_state_dict(state["state_encoder"])
-        if "online_goal" in state and self.online_goal is not None:
-            self.online_goal.load_state_dict(state["online_goal"])
-        elif "goal_encoder" in state and self.goal_encoder is not None:
-            self.goal_encoder.load_state_dict(state["goal_encoder"])
 
     def _evaluate_agent(self, global_step: int, eval_episodes: int = 256) -> None:
         self.checkpointer.save_latest(self._checkpoint_state())
@@ -286,12 +203,23 @@ class PPOTrainer:
         obs = self.envs.reset(seed=self.seed + global_step)
         achieved = self.envs.achieved_xy.clone()
         subgoal = self.envs.subgoal_xy.clone() if self.planner is not None else None
+        eval_done = None
+        if self.graph_planner is not None:
+            self.graph_planner.reset_state()
+            eval_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         max_total_steps = self.envs.max_episode_steps * (eval_episodes // max(1, self.num_envs) + 2)
         step_count = 0
         with torch.no_grad():
             while len(eval_returns) < eval_episodes and step_count < max_total_steps:
                 step_count += 1
-                policy_input = self.builder.assemble(obs, achieved, subgoal)
+                if self.graph_planner is not None:
+                    gp = self.graph_planner.update(obs, achieved, done_mask=eval_done,
+                                                   act_fn=self._imagine_act_fn)
+                    policy_input = self.builder.assemble(
+                        obs, achieved, z_state=gp["z_state"], z_goal=gp["z_goal"],
+                        z_subgoal=gp["z_subgoal"])
+                else:
+                    policy_input = self.builder.assemble(obs, achieved, subgoal)
                 action = self.agent.actor_mean(policy_input)
                 clipped = torch.clamp(action, self.envs.action_low, self.envs.action_high)
                 obs, _, _, _, infos = self.envs.step(clipped)
@@ -299,6 +227,8 @@ class PPOTrainer:
                 if self.planner is not None:
                     subgoal = infos["subgoal"]
                 done = infos["done"]
+                if self.graph_planner is not None:
+                    eval_done = done.bool()
                 if bool(done.any()):
                     done_idx = torch.nonzero(done, as_tuple=False).squeeze(1)
                     ep_ret = infos["episodic_return"][done_idx].cpu().numpy()
@@ -350,14 +280,12 @@ class PPOTrainer:
             print("[checkpoint] load_default_checkpoint=false; training from scratch")
 
         self.session.init()
+        self.writer = SummaryWriter(self.run_dir)
         num_params = sum(p.numel() for p in self.agent.parameters())
         self.writer.add_scalar("charts/num_parameters", num_params, 0)
         self.writer.add_scalar("charts/num_iterations", num_iterations, 0)
 
         device = self.device
-        obs_buf = torch.zeros((self.num_steps, self.num_envs, self.envs.policy_obs_dim), device=device)
-        achieved_buf = torch.zeros((self.num_steps, self.num_envs, 2), device=device)
-        subgoal_buf = torch.zeros((self.num_steps, self.num_envs, 2), device=device)
         policy_inputs = torch.zeros((self.num_steps, self.num_envs, self.obs_dim), device=device)
         actions = torch.zeros((self.num_steps, self.num_envs, self.act_dim), device=device)
         logprobs = torch.zeros((self.num_steps, self.num_envs), device=device)
@@ -388,12 +316,17 @@ class PPOTrainer:
 
             for step in range(self.num_steps):
                 self._global_step += self.num_envs
-                obs_buf[step] = next_obs
-                achieved_buf[step] = next_achieved
-                subgoal_buf[step] = next_subgoal
                 dones[step] = next_done
 
-                pi = self.builder.assemble(next_obs, next_achieved, next_subgoal)
+                if self.graph_planner is not None:
+                    gp = self.graph_planner.update(
+                        next_obs, next_achieved, done_mask=next_done.bool(),
+                        act_fn=self._imagine_act_fn)
+                    pi = self.builder.assemble(
+                        next_obs, next_achieved,
+                        z_state=gp["z_state"], z_goal=gp["z_goal"], z_subgoal=gp["z_subgoal"])
+                else:
+                    pi = self.builder.assemble(next_obs, next_achieved, next_subgoal)
                 policy_inputs[step] = pi
                 with torch.no_grad():
                     action, logprob, _, value = self.agent.get_action_and_value(pi)
@@ -413,9 +346,16 @@ class PPOTrainer:
                 rewards[step] = reward
 
                 with torch.no_grad():
-                    final_pi = self.builder.assemble(
-                        infos["final_obs"], infos["achieved_goal"], infos["subgoal"],
-                    )
+                    if self.graph_planner is not None:
+                        zs_f, zg_f = self.graph_planner.encode(
+                            infos["final_obs"], infos["achieved_goal"])
+                        final_pi = self.builder.assemble(
+                            infos["final_obs"], infos["achieved_goal"],
+                            z_state=zs_f, z_goal=zg_f, z_subgoal=gp["z_subgoal"])
+                    else:
+                        final_pi = self.builder.assemble(
+                            infos["final_obs"], infos["achieved_goal"], infos["subgoal"],
+                        )
                     real_next_values[step] = (
                         self.agent.get_value(final_pi).flatten()
                         * (1.0 - terminations.float())
@@ -526,16 +466,6 @@ class PPOTrainer:
                     break
 
             update_time = time.time() - update_start
-
-            enc_metrics: dict = {}
-            if self.online_state is not None:
-                enc_metrics = self.online_state.step(obs_buf, actions, achieved_buf, dones)
-                for k, v in enc_metrics.items():
-                    self.writer.add_scalar(f"encoder/{k}", v, self._global_step)
-            if self.online_goal is not None:
-                goal_metrics = self.online_goal.step(obs_buf, actions, achieved_buf, dones)
-                for k, v in goal_metrics.items():
-                    self.writer.add_scalar(f"goal_encoder/{k}", v, self._global_step)
 
             y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
             var_y = float(np.var(y_true))
