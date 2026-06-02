@@ -75,10 +75,19 @@ class InverseWorldModelTrainer:
         data = load_antmaze(cfg["dataset_id"], cfg["datasets_path"])
         train_data, val_data = data.split(cfg["val_frac"], cfg["seed"])
         K = int(cfg["k_max"])
-        train_sampler = InverseWindowSampler(train_data, cfg["input_mode"], K,
-                                             seed=cfg["seed"], device=self.device)
-        val_sampler = InverseWindowSampler(val_data, cfg["input_mode"], K,
-                                           seed=cfg["seed"] + 1, device=self.device)
+        data_source = str(cfg.get("data_source", "trajectory"))
+        if data_source == "dijkstra":
+            from .dijkstra_data import DijkstraPathSampler
+            graph_npz = cfg["graph_npz"]
+            train_sampler = DijkstraPathSampler(data, graph_npz, K,
+                                                seed=cfg["seed"], device=self.device)
+            val_sampler = DijkstraPathSampler(data, graph_npz, K,
+                                              seed=cfg["seed"] + 1, device=self.device)
+        else:
+            train_sampler = InverseWindowSampler(train_data, cfg["input_mode"], K,
+                                                 seed=cfg["seed"], device=self.device)
+            val_sampler = InverseWindowSampler(val_data, cfg["input_mode"], K,
+                                               seed=cfg["seed"] + 1, device=self.device)
         act_dim = int(train_data.act.shape[-1])
 
         model = InverseWorldModel(
@@ -144,11 +153,15 @@ class InverseWorldModelTrainer:
         for step in range(start_step, total_steps + 1):
             model.train()
             b = train_sampler.batch(int(cfg["batch_size"]))
-            states = b["states"]
-            B = states.shape[0]
-            with torch.no_grad():
-                flat = states.reshape(-1, states.shape[-1])
-                z_seq = encoder.encode_full(flat).view(B, K + 1, latent_dim)
+            if "latents" in b:
+                z_seq = b["latents"]
+                B = z_seq.shape[0]
+            else:
+                states = b["states"]
+                B = states.shape[0]
+                with torch.no_grad():
+                    flat = states.reshape(-1, states.shape[-1])
+                    z_seq = encoder.encode_full(flat).view(B, K + 1, latent_dim)
             z0 = z_seq[:, 0]
             k = b["k"]
             zk = z_seq[torch.arange(B, device=self.device), k]
