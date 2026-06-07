@@ -5,13 +5,12 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --gres=gpu:a5000:1
-#SBATCH --job-name="mirage-encoder"
+#SBATCH --job-name="mirage-bcppo"
 #SBATCH --output=sbatch/%A.out
 #SBATCH --error=sbatch/%A.err
 
 echo "SLURM_JOBID        = $SLURM_JOBID"
 echo "SLURM_JOB_NODELIST = $SLURM_JOB_NODELIST"
-echo "submit directory   = $SLURM_SUBMIT_DIR"
 
 echo "Setting up conda..."
 __conda_setup="$('/iliad/u/samrat/anaconda3/bin/conda' 'shell.bash' 'hook' 2>/dev/null)"
@@ -37,14 +36,23 @@ export MUJOCO_GL="osmesa"
 export PYOPENGL_PLATFORM="osmesa"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$(pwd):$PYTHONPATH"
-echo "CUDA_VISIBLE_DEVICES = $CUDA_VISIBLE_DEVICES"
+export WARP_CACHE_PATH="/tmp/${USER}_warp_cache_${SLURM_JOB_ID}"
+mkdir -p "$WARP_CACHE_PATH"
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader || true
 
-DEFAULT_CONFIG="$PROJECT_DIR/config/encoder/state_encoder.yaml"
-config="${1:-$DEFAULT_CONFIG}"
-echo "Using config: $config"
+BC_EXP="${1:-ab_latent_bc}"
+PPO_CONFIG="${2:-config/ppo/ab_latent_bc.yaml}"
+CKPT="runs/${BC_EXP}/${BC_EXP}.cleanrl_model"
 
-cmd="python -u train_encoder.py --config $config"
-echo "Running: $cmd"
-$cmd
+# Run BC warm-start only if no checkpoint exists yet (so a preemption-requeue
+# resumes the PPO run's own progress instead of overwriting it with a fresh BC).
+if [ ! -f "$CKPT" ]; then
+  echo "=== BC warm-start -> $CKPT ==="
+  python -u train_bc_latent.py --exp_name "$BC_EXP" || { echo "BC FAILED"; exit 1; }
+else
+  echo "=== checkpoint exists ($CKPT); skipping BC, resuming PPO ==="
+fi
 
+echo "=== PPO finetune: $PPO_CONFIG ==="
+python -u train_ppo.py --config "$PPO_CONFIG"
 echo "DONE"

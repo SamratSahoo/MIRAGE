@@ -240,3 +240,4 @@ runs_world_model/**
 !checkpoints/
 !checkpoints/**/*.pt
 !checkpoints/**/*.yaml
+tmp/**

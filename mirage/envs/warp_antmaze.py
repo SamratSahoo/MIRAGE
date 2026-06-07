@@ -72,6 +72,8 @@ class WarpAntMazeEnv:
         self.qpos0 = torch.from_numpy(qpos0).to(self.device)
         self.cells = torch.from_numpy(cells).to(self.device)
         self.n_cells = self.cells.shape[0]
+        self._cell_dist = torch.cdist(self.cells, self.cells)
+        self.curriculum_max_dist = float("inf")
         self.desired_goal = torch.zeros((self.num_envs, _GOAL_DIM), device=self.device)
         self.subgoal_xy = torch.zeros((self.num_envs, _GOAL_DIM), device=self.device)
         self.episode_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -103,13 +105,34 @@ class WarpAntMazeEnv:
 
     def _sample_goal_reset(self, n):
         goal_cell = torch.randint(0, self.n_cells, (n,), generator=self.gen, device=self.device)
-        offset = torch.randint(1, self.n_cells, (n,), generator=self.gen, device=self.device)
-        reset_cell = (goal_cell + offset) % self.n_cells
+        if self.curriculum_max_dist == float("inf"):
+            offset = torch.randint(1, self.n_cells, (n,), generator=self.gen, device=self.device)
+            reset_cell = (goal_cell + offset) % self.n_cells
+        else:
+            dists = self._cell_dist[goal_cell]
+            valid = dists <= self.curriculum_max_dist
+            r = torch.rand((n, self.n_cells), generator=self.gen, device=self.device)
+            r = torch.where(valid, r, torch.full_like(r, -1.0))
+            reset_cell = r.argmax(1)
         goal_noise = (torch.rand((n, 2), generator=self.gen, device=self.device) * 2 - 1) * _XY_NOISE
         reset_noise = (torch.rand((n, 2), generator=self.gen, device=self.device) * 2 - 1) * _XY_NOISE
         goal_xy = self.cells[goal_cell] + goal_noise
         reset_xy = self.cells[reset_cell] + reset_noise
         return goal_xy, reset_xy
+
+    def _sample_goal_near(self, agent_xy):
+        n = agent_xy.shape[0]
+        if self.curriculum_max_dist == float("inf"):
+            goal_cell = torch.randint(0, self.n_cells, (n,), generator=self.gen, device=self.device)
+        else:
+            agent_cell = torch.cdist(agent_xy, self.cells).argmin(1)
+            dists = self._cell_dist[agent_cell]
+            valid = dists <= self.curriculum_max_dist
+            r = torch.rand((n, self.n_cells), generator=self.gen, device=self.device)
+            r = torch.where(valid, r, torch.full_like(r, -1.0))
+            goal_cell = r.argmax(1)
+        noise = (torch.rand((n, 2), generator=self.gen, device=self.device) * 2 - 1) * _XY_NOISE
+        return self.cells[goal_cell] + noise
 
     def _write_reset(self, idx, goal_xy, reset_xy):
         self._qpos[idx, 0:2] = reset_xy
@@ -145,14 +168,19 @@ class WarpAntMazeEnv:
         self.subgoal_xy[idx] = self.subgoal_planner.compute_subgoals(agent_xy, goal_xy)
 
     @torch.no_grad()
-    def reset(self, seed=None):
+    def reset(self, seed=None, stagger=False):
         if seed is not None:
             self.gen.manual_seed(int(seed))
         idx = torch.arange(self.num_envs, device=self.device)
         goal_xy, reset_xy = self._sample_goal_reset(self.num_envs)
         self._write_reset(idx, goal_xy, reset_xy)
         mjw.forward(self.wm, self.wd)
-        self.episode_step.zero_()
+        if stagger:
+            self.episode_step.copy_(torch.randint(
+                0, self.max_episode_steps, (self.num_envs,),
+                generator=self.gen, device=self.device))
+        else:
+            self.episode_step.zero_()
         self.episode_return.zero_()
         self.episode_length.zero_()
         self.goals_reached.zero_()
@@ -179,7 +207,7 @@ class WarpAntMazeEnv:
             if bool(goal_reached.any()):
                 reach_idx = torch.nonzero(goal_reached, as_tuple=False).squeeze(1)
                 self.goals_reached[reach_idx] += 1
-                new_goal_xy, _ = self._sample_goal_reset(reach_idx.numel())
+                new_goal_xy = self._sample_goal_near(self._qpos[reach_idx, 0:2])
                 self.desired_goal[reach_idx] = new_goal_xy
                 self._refresh_subgoals(reach_idx)
         else:

@@ -17,6 +17,7 @@ from mirage.paths import resolve_path
 from mirage.planning.motion_planning.cell_graph_planner import CellGraphPlanner
 from mirage.planning.graph_planning.latent_graph_planner import LatentGraphPlanner
 from mirage.utils.checkpoint import Checkpointer
+from mirage.utils.running_norm import RunningMeanStd
 from mirage.utils.wandb_session import WandbSession
 
 from .agent import Agent
@@ -55,6 +56,7 @@ class PPOTrainer:
         self.vf_coef = float(ppo_cfg["vf_coef"])
         self.max_grad_norm = float(ppo_cfg["max_grad_norm"])
         self.load_default_checkpoint = bool(ppo_cfg.get("load_default_checkpoint", True))
+        self.normalize_obs = bool(ppo_cfg.get("normalize_obs", False))
 
         self.state_mode = str(ppo_cfg.get("state_mode", "raw"))
         self.unified_encoder_path = str(ppo_cfg.get("unified_encoder_path", "") or "")
@@ -124,6 +126,8 @@ class PPOTrainer:
 
         self.agent = Agent(obs_dim=self.obs_dim, act_dim=self.act_dim).to(self.device)
         self.optimizer = optim.Adam(self.agent.parameters(), lr=self.learning_rate, eps=1e-5)
+        self.obs_norm = (RunningMeanStd(self.obs_dim).to(self.device)
+                         if self.normalize_obs else None)
 
         self._imagine_act_fn = (
             (lambda z, zk, gxy: self.agent.actor_mean(
@@ -155,6 +159,14 @@ class PPOTrainer:
         self._last_save_step = 0
         self._last_eval_step = 0
 
+    def _assemble(self, obs, achieved, subgoal=None, *, update_norm: bool = False, **kw):
+        pi = self.builder.assemble(obs, achieved, subgoal, **kw)
+        if self.obs_norm is not None:
+            if update_norm:
+                self.obs_norm.update(pi)
+            pi = self.obs_norm.normalize(pi)
+        return pi
+
     def _capture_rng(self) -> dict:
         return {
             "torch": torch.get_rng_state(),
@@ -175,6 +187,7 @@ class PPOTrainer:
         state = {
             "agent": self.agent.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "obs_norm": self.obs_norm.state_dict() if self.obs_norm is not None else None,
             "global_step": self._global_step,
             "global_episodes": self._global_episodes,
             "best_eval_return": self._best_eval_return,
@@ -188,6 +201,8 @@ class PPOTrainer:
     def _load_checkpoint(self, state: dict) -> None:
         self.agent.load_state_dict(state["agent"])
         self.optimizer.load_state_dict(state["optimizer"])
+        if self.obs_norm is not None and state.get("obs_norm") is not None:
+            self.obs_norm.load_state_dict(state["obs_norm"])
         self._global_step = int(state["global_step"])
         self._global_episodes = int(state["global_episodes"])
         self._best_eval_return = state.get("best_eval_return")
@@ -215,11 +230,11 @@ class PPOTrainer:
                 if self.graph_planner is not None:
                     gp = self.graph_planner.update(obs, achieved, done_mask=eval_done,
                                                    act_fn=self._imagine_act_fn)
-                    policy_input = self.builder.assemble(
+                    policy_input = self._assemble(
                         obs, achieved, z_state=gp["z_state"], z_goal=gp["z_goal"],
-                        z_subgoal=gp["z_subgoal"])
+                        z_subgoal=gp["z_subgoal"], update_norm=False)
                 else:
-                    policy_input = self.builder.assemble(obs, achieved, subgoal)
+                    policy_input = self._assemble(obs, achieved, subgoal, update_norm=False)
                 action = self.agent.actor_mean(policy_input)
                 clipped = torch.clamp(action, self.envs.action_low, self.envs.action_high)
                 obs, _, _, _, infos = self.envs.step(clipped)
@@ -322,11 +337,12 @@ class PPOTrainer:
                     gp = self.graph_planner.update(
                         next_obs, next_achieved, done_mask=next_done.bool(),
                         act_fn=self._imagine_act_fn)
-                    pi = self.builder.assemble(
+                    pi = self._assemble(
                         next_obs, next_achieved,
-                        z_state=gp["z_state"], z_goal=gp["z_goal"], z_subgoal=gp["z_subgoal"])
+                        z_state=gp["z_state"], z_goal=gp["z_goal"], z_subgoal=gp["z_subgoal"],
+                        update_norm=True)
                 else:
-                    pi = self.builder.assemble(next_obs, next_achieved, next_subgoal)
+                    pi = self._assemble(next_obs, next_achieved, next_subgoal, update_norm=True)
                 policy_inputs[step] = pi
                 with torch.no_grad():
                     action, logprob, _, value = self.agent.get_action_and_value(pi)
@@ -349,12 +365,14 @@ class PPOTrainer:
                     if self.graph_planner is not None:
                         zs_f, zg_f = self.graph_planner.encode(
                             infos["final_obs"], infos["achieved_goal"])
-                        final_pi = self.builder.assemble(
+                        final_pi = self._assemble(
                             infos["final_obs"], infos["achieved_goal"],
-                            z_state=zs_f, z_goal=zg_f, z_subgoal=gp["z_subgoal"])
+                            z_state=zs_f, z_goal=zg_f, z_subgoal=gp["z_subgoal"],
+                            update_norm=False)
                     else:
-                        final_pi = self.builder.assemble(
+                        final_pi = self._assemble(
                             infos["final_obs"], infos["achieved_goal"], infos["subgoal"],
+                            update_norm=False,
                         )
                     real_next_values[step] = (
                         self.agent.get_value(final_pi).flatten()

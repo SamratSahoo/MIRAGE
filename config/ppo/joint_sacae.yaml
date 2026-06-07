@@ -1,0 +1,66 @@
+env:
+  env_type: antmaze
+  env_id: AntMaze_UMaze-v5
+  reward_type: sparse
+  continuing_task: true
+  reset_target: false
+  max_episode_steps: 1000
+  goal_size: 2
+  capture_video: false
+  video_every: 1000
+  use_cuda_graph: false
+
+ppo:
+  seed: 1
+  load_default_checkpoint: true
+  num_envs: 16384
+  num_steps: 16
+  num_minibatches: 32
+  update_epochs: 10
+  learning_rate: 0.0003
+  anneal_lr: true
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  clip_vloss: true
+  ent_coef: 0.001
+  normalize_obs: true
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+
+joint:
+  encoder_init_path: runs_encoder/dual_input_masked_recon/encoder_best.pt
+  train_encoder: true          # SAC+AE: un-freeze the encoder
+  encoder_lr: 0.0001
+  rep_minibatches: 4
+  intrinsic_coef: 0.0
+  gamma_int: 0.99
+  curriculum: true
+  curriculum_success_thresh: 0.2
+  curriculum_patience: 25
+  rnd_lr: 0.0001
+  rnd_dim: 128
+  nce_weight: 1.0
+  fwd_weight: 0.5
+  inv_weight: 1.0
+  recon_weight: 1.0
+  nce_temperature: 0.1
+  grad_clip: 10.0
+  use_graph_subgoals: false     # graph needs a frozen encoder; off under SAC+AE
+  # --- SAC+AE encoder shaping ---
+  use_latent_critic: true
+  vlat_weight: 0.2
+  mask_prob: 0.3
+  align_weight: 0.1
+
+wandb:
+  track: true
+  project: MIRAGE
+  entity: null
+
+train:
+  total_timesteps: 100000000
+  save_model: true
+  save_freq: 20000000
+  eval_freq: 2000000
+  eval_episodes: 256

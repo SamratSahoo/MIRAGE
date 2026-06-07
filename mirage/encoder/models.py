@@ -36,7 +36,8 @@ class MaskedStateEncoder(nn.Module):
         self.l2_normalize = l2_normalize
         self.latent_dim = latent_dim
 
-    def forward(self, s: torch.Tensor, mask_prob: float = 0.0) -> torch.Tensor:
+    def forward(self, s: torch.Tensor, mask_prob: float = 0.0,
+                prenorm: bool = False) -> torch.Tensor:
         B = s.shape[0]
         if mask_prob > 0:
             flag = (torch.rand(B, 1, device=s.device, dtype=s.dtype) < mask_prob).to(s.dtype)
@@ -47,21 +48,21 @@ class MaskedStateEncoder(nn.Module):
         xy = s[:, self.proprio_dim:self.proprio_dim + self.xy_dim]
         s_aug = torch.cat([masked_proprio, xy, flag], dim=-1)
         z = self.net(s_aug)
-        if self.l2_normalize:
+        if self.l2_normalize and not prenorm:
             z = F.normalize(z, dim=-1, eps=1e-8)
         return z
 
-    def encode_full(self, s: torch.Tensor) -> torch.Tensor:
-        return self.forward(s, mask_prob=0.0)
+    def encode_full(self, s: torch.Tensor, prenorm: bool = False) -> torch.Tensor:
+        return self.forward(s, mask_prob=0.0, prenorm=prenorm)
 
-    def encode_goal(self, s: torch.Tensor) -> torch.Tensor:
+    def encode_goal(self, s: torch.Tensor, prenorm: bool = False) -> torch.Tensor:
         B = s.shape[0]
         flag = torch.ones((B, 1), device=s.device, dtype=s.dtype)
         masked_proprio = torch.zeros((B, self.proprio_dim), device=s.device, dtype=s.dtype)
         xy = s[:, self.proprio_dim:self.proprio_dim + self.xy_dim]
         s_aug = torch.cat([masked_proprio, xy, flag], dim=-1)
         z = self.net(s_aug)
-        if self.l2_normalize:
+        if self.l2_normalize and not prenorm:
             z = F.normalize(z, dim=-1, eps=1e-8)
         return z
 
